@@ -43,9 +43,20 @@ export const api = {
   updateMemory: (id: string, body: { category?: string; content?: string }) => request<MemoryItem>(`/api/memory/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
   deleteMemory: (id: string) => request<{ ok: boolean }>(`/api/memory/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   conversations: () => request<Array<{ id: string; title: string; created_at: string; updated_at: string }>>('/api/chat/conversations'),
-  conversation: (id: string) => request<{ id: string; title: string; messages: ChatMessage[] }>(`/api/chat/conversations/${encodeURIComponent(id)}`),
+  conversation: (id: string) => request<{ id: string; title: string; messages: ChatMessage[]; missing?: boolean }>(`/api/chat/conversations/${encodeURIComponent(id)}`),
   streamChat: async (body: { message: string; conversation_id?: string; client_message_id: string; mode: string }, onEvent: (event: string, data: Record<string, unknown>) => void, signal?: AbortSignal) => {
-    const response = await fetch('/api/chat', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' }, body: JSON.stringify(body), signal });
+    const post = (payload: typeof body) => fetch('/api/chat', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
+      body: JSON.stringify(payload),
+      signal,
+    });
+    let response = await post(body);
+    // Stale conversation ids (common on Vercel ephemeral SQLite) — retry as a new thread.
+    if (response.status === 404 && body.conversation_id) {
+      response = await post({ ...body, conversation_id: undefined });
+    }
     if (!response.ok) {
       let message = `Chat failed (${response.status}).`;
       try { const data = await response.json(); message = data.detail || message; } catch { /* ignore malformed error body */ }

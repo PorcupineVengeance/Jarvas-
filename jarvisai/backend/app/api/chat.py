@@ -44,14 +44,29 @@ def resolve_mode(message: str, requested: Mode) -> Literal["normal", "research",
 
 
 def _get_conversation(db: Session, user: User, conversation_id: str | None, text: str) -> Conversation:
-    """Return a conversation owned by the user or create a new one."""
-    if conversation_id:
-        conversation = db.scalar(select(Conversation).where(Conversation.id == conversation_id, Conversation.user_id == user.open_id))
-        if conversation is None:
-            raise HTTPException(status_code=404, detail="Conversation not found.")
-        return conversation
+    """Return a conversation owned by the user or create a new one.
+
+    On serverless hosts (Vercel) SQLite in /tmp is not shared across instances, so a
+    conversation_id from a previous reply may be missing. Recreate it instead of 404.
+    """
     title = text.strip().splitlines()[0][:120] if text.strip() else "New conversation"
-    conversation = Conversation(id=str(uuid4()), user_id=user.open_id, title=title or "New conversation")
+    title = title or "New conversation"
+    if conversation_id:
+        conversation = db.scalar(
+            select(Conversation).where(Conversation.id == conversation_id, Conversation.user_id == user.open_id)
+        )
+        if conversation is not None:
+            return conversation
+        conversation = Conversation(id=conversation_id, user_id=user.open_id, title=title)
+        db.add(conversation)
+        try:
+            db.commit()
+            db.refresh(conversation)
+            return conversation
+        except Exception:
+            db.rollback()
+            # Race / stale id — fall through and mint a fresh conversation.
+    conversation = Conversation(id=str(uuid4()), user_id=user.open_id, title=title)
     db.add(conversation)
     db.commit()
     db.refresh(conversation)
@@ -99,6 +114,12 @@ def _messages_for_turn(db: Session, user: User, conversation: Conversation, curr
         messages.append({"role": item.role, "content": content})
     messages.append({"role": "user", "content": current})
     return messages
+
+
+@router.get("/chat")
+def chat_info():
+    """Avoid opaque SPA 404s when the browser probes this path with GET."""
+    return {"service": "jarvis-chat", "methods": ["POST"], "stream": "text/event-stream"}
 
 
 @router.post("/chat")
@@ -151,6 +172,7 @@ def conversations(db: Session = Depends(get_db), user: User = Depends(get_curren
 def conversation_detail(conversation_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     item = db.scalar(select(Conversation).where(Conversation.id == conversation_id, Conversation.user_id == user.open_id))
     if item is None:
-        raise HTTPException(status_code=404, detail="Conversation not found.")
+        # Soft-miss for ephemeral DBs — client can keep chatting with an empty thread.
+        return {"id": conversation_id, "title": "Conversation", "messages": [], "missing": True}
     messages = db.scalars(select(Message).where(Message.conversation_id == item.id, Message.user_id == user.open_id).order_by(Message.id.asc()).limit(200)).all()
     return {"id": item.id, "title": item.title, "messages": [{"id": str(row.id), "role": row.role, "content": row.content} for row in messages if row.role in {"user", "assistant"}]}

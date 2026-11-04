@@ -159,10 +159,11 @@ def root():
     return _serve_frontend("")
 
 
-@app.get("/{path:path}", include_in_schema=False)
-def frontend_or_spa(path: str):
-    if path == "api" or path.startswith(("api/", "manus-storage/", "__manus/", "__system__/")):
-        return JSONResponse(status_code=404, content={"detail": "Not found."})
-    if __import__("os").getenv("VERCEL"):
-        return JSONResponse(status_code=404, content={"detail": "Not found."})
-    return _serve_frontend(path)
+# Local/dev only: serve the built SPA. Never register this on Vercel — it steals
+# GET /api/* and shows up as confusing 404s in the browser console.
+if not __import__("os").getenv("VERCEL"):
+    @app.get("/{path:path}", include_in_schema=False)
+    def frontend_or_spa(path: str):
+        if path == "api" or path.startswith(("api/", "manus-storage/", "__manus/", "__system__/")):
+            return JSONResponse(status_code=404, content={"detail": "Not found."})
+        return _serve_frontend(path)

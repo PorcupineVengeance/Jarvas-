@@ -28,7 +28,16 @@ export default function ChatPage() {
     const requested = (location.state as { conversationId?: string } | null)?.conversationId;
     if (requested && requested !== conversationId) {
       setConversationId(requested); setLoaded(false);
-      void api.conversation(requested).then((data) => { setMessages(data.messages); setLoaded(true); }).catch((e) => { setError(e.message); setLoaded(true); });
+      void api.conversation(requested).then((data) => {
+        setMessages(data.messages);
+        if ((data as { missing?: boolean }).missing) setError('');
+        setLoaded(true);
+      }).catch((e) => {
+        setConversationId(undefined);
+        setMessages([]);
+        setError(e instanceof Error ? e.message : 'Conversation could not be loaded.');
+        setLoaded(true);
+      });
     }
   }, [location.state, conversationId]);
   useEffect(() => { scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }); }, [messages, busy]);
