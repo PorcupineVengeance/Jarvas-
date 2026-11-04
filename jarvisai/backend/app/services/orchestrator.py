@@ -57,11 +57,11 @@ async def orchestrated_stream(messages: list[dict[str, Any]], mode: str) -> Asyn
     if mode not in {"research"}:
         # Voice calls need low latency: hard-cap tokens and keep temperature steady.
         if mode == "voice":
-            # gpt-oss models may spend some tokens on internal reasoning — keep headroom.
-            async for text in stream_completion(messages, max_tokens=180, temperature=0.35):
+            # Plenty of headroom so reasoning models still leave tokens for spoken text.
+            async for text in stream_completion(messages, max_tokens=350, temperature=0.4):
                 yield "delta", text
             return
-        async for text in stream_completion(messages):
+        async for text in stream_completion(messages, max_tokens=800, temperature=0.5):
             yield "delta", text
         return
 

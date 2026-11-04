@@ -21,16 +21,28 @@ def _request_payload(
     *,
     max_tokens: int | None = None,
     temperature: float | None = None,
+    model: str | None = None,
 ) -> dict[str, Any]:
     settings = get_settings()
+    chosen = model or settings.llm_model
     payload: dict[str, Any] = {"messages": messages, "stream": stream}
-    if settings.llm_model:
-        payload["model"] = settings.llm_model
+    if chosen:
+        payload["model"] = chosen
+        lower = chosen.lower()
+        # Keep spoken/chat text from being starved by hidden reasoning tokens.
+        if "qwen" in lower:
+            payload["reasoning_effort"] = "none"
+        elif "gpt-oss" in lower:
+            payload["reasoning_effort"] = "low"
+            payload["include_reasoning"] = False
     if max_tokens is not None:
         payload["max_tokens"] = max_tokens
     if temperature is not None:
         payload["temperature"] = temperature
     return payload
+
+
+_FALLBACK_MODELS = ("openai/gpt-oss-20b", "qwen/qwen3.8-27b")
 
 
 def _endpoint() -> tuple[str, str]:
@@ -98,68 +110,96 @@ async def stream_completion(
 ) -> AsyncIterator[str]:
     url, api_key = _endpoint()
     timeout = httpx.Timeout(35.0 if max_tokens and max_tokens <= 220 else 90.0, connect=4.0)
-    payload = _request_payload(messages, stream=True, max_tokens=max_tokens, temperature=temperature)
+    settings = get_settings()
+    primary = settings.llm_model
+    candidates: list[str | None] = [primary]
+    for alt in _FALLBACK_MODELS:
+        if alt != primary and alt not in candidates:
+            candidates.append(alt)
     # Fresh client per stream avoids keep-alive stalls after cancelled voice turns.
     last_error: Exception | None = None
-    for attempt in range(2):
-        produced = False
-        try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                async with client.stream(
-                    "POST",
-                    url,
-                    headers={"Authorization": f"Bearer {api_key}"},
-                    json=payload,
-                ) as response:
-                    if response.is_error:
-                        body = await response.aread()
-                        detail = ""
-                        try:
-                            err = json.loads(body.decode("utf-8", errors="ignore"))
-                            if isinstance(err, dict):
-                                detail = str((err.get("error") or {}).get("message") or err.get("message") or "")
-                        except Exception:
-                            detail = body[:180].decode("utf-8", errors="ignore") if body else ""
-                        status = response.status_code
-                        message = f"AI service returned HTTP {status}" + (f": {detail}" if detail else ".")
-                        if status in {429, 503} and attempt == 0:
-                            last_error = ProviderRequestFailed(message)
-                            await asyncio.sleep(0.45)
-                            continue
-                        raise ProviderRequestFailed(message)
-                    async for line in response.aiter_lines():
-                        if not line or not line.startswith("data:"):
-                            continue
-                        raw = line[5:].strip()
-                        if raw == "[DONE]":
-                            break
-                        try:
-                            event = json.loads(raw)
-                        except json.JSONDecodeError:
-                            continue
-                        if not isinstance(event, dict):
-                            continue
-                        if event.get("error"):
-                            raise ProviderRequestFailed("The AI service returned a streaming error.")
-                        choices = event.get("choices") or []
-                        if not choices or not isinstance(choices[0], dict):
-                            continue
-                        delta = (choices[0].get("delta") or {}).get("content")
-                        if isinstance(delta, str) and delta:
-                            produced = True
-                            yield delta
-            if produced or attempt == 1:
-                return
-            # 200 with no text — retry once (capacity / reasoning-only quirks).
-            await asyncio.sleep(0.35)
-        except httpx.TimeoutException as exc:
-            last_error = ProviderRequestFailed("The AI request timed out. Your prompt is retained; retry when ready.")
-            if attempt == 0:
-                await asyncio.sleep(0.35)
-                continue
-            raise last_error from exc
-        except httpx.HTTPError as exc:
-            raise ProviderRequestFailed("The AI service could not be reached. Your prompt is retained; retry when ready.") from exc
+    for model_idx, model in enumerate(candidates):
+        tokens = max_tokens
+        for attempt in range(2):
+            produced = False
+            payload = _request_payload(
+                messages,
+                stream=True,
+                max_tokens=tokens,
+                temperature=temperature,
+                model=model,
+            )
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    async with client.stream(
+                        "POST",
+                        url,
+                        headers={"Authorization": f"Bearer {api_key}"},
+                        json=payload,
+                    ) as response:
+                        if response.is_error:
+                            body = await response.aread()
+                            detail = ""
+                            try:
+                                err = json.loads(body.decode("utf-8", errors="ignore"))
+                                if isinstance(err, dict):
+                                    detail = str((err.get("error") or {}).get("message") or err.get("message") or "")
+                            except Exception:
+                                detail = body[:180].decode("utf-8", errors="ignore") if body else ""
+                            status = response.status_code
+                            message = f"AI service returned HTTP {status}" + (f": {detail}" if detail else ".")
+                            if status in {429, 503}:
+                                last_error = ProviderRequestFailed(message)
+                                await asyncio.sleep(0.35)
+                                break  # try next model
+                            raise ProviderRequestFailed(message)
+                        async for line in response.aiter_lines():
+                            if not line or not line.startswith("data:"):
+                                continue
+                            raw = line[5:].strip()
+                            if raw == "[DONE]":
+                                break
+                            try:
+                                event = json.loads(raw)
+                            except json.JSONDecodeError:
+                                continue
+                            if not isinstance(event, dict):
+                                continue
+                            if event.get("error"):
+                                raise ProviderRequestFailed("The AI service returned a streaming error.")
+                            choices = event.get("choices") or []
+                            if not choices or not isinstance(choices[0], dict):
+                                continue
+                            delta_obj = choices[0].get("delta") or {}
+                            if not isinstance(delta_obj, dict):
+                                continue
+                            delta = delta_obj.get("content")
+                            if isinstance(delta, str) and delta:
+                                produced = True
+                                yield delta
+                if produced:
+                    return
+                # Empty visible text — bump tokens once, then fall through to next model.
+                if attempt == 0 and tokens is not None and tokens < 500:
+                    tokens = min(500, tokens * 3)
+                    await asyncio.sleep(0.2)
+                    continue
+                break
+            except httpx.TimeoutException as exc:
+                last_error = ProviderRequestFailed("The AI request timed out. Your prompt is retained; retry when ready.")
+                if attempt == 0:
+                    await asyncio.sleep(0.35)
+                    continue
+                if model_idx + 1 < len(candidates):
+                    break
+                raise last_error from exc
+            except httpx.HTTPError as exc:
+                last_error = ProviderRequestFailed(
+                    "The AI service could not be reached. Your prompt is retained; retry when ready."
+                )
+                if model_idx + 1 < len(candidates):
+                    break
+                raise last_error from exc
     if last_error:
         raise last_error
     raise ProviderRequestFailed("The AI service returned an empty reply. Please try again.")

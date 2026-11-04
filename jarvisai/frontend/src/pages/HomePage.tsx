@@ -209,11 +209,30 @@ export default function HomePage({ user }: { user: User }) {
         controller.signal,
       );
       if (!failed) {
-        const finalText = fullAnswer.trim();
+        let finalText = fullAnswer.trim();
+        // One automatic retry if the provider streamed no visible text.
         if (!finalText) {
+          fullAnswer = '';
+          await api.streamChat(
+            { message: text, client_message_id: crypto.randomUUID(), mode: 'voice' },
+            (event, data) => {
+              if (event === 'delta' && typeof data.text === 'string') fullAnswer += data.text;
+              else if (event === 'done' && typeof data.conversation_id === 'string') {
+                setConversationId(data.conversation_id);
+                conversationIdRef.current = data.conversation_id;
+              } else if (event === 'error') {
+                failed = true;
+                setChatError(typeof data.message === 'string' ? data.message : 'The response was interrupted.');
+              }
+            },
+            controller.signal,
+          );
+          finalText = fullAnswer.trim();
+        }
+        if (!failed && !finalText) {
           setChatError('JARVIS returned an empty reply. Please try again.');
           failed = true;
-        } else {
+        } else if (!failed) {
           await speakReply(finalText);
         }
       }

@@ -127,9 +127,24 @@ export default function VoicePage() {
       );
       if (!failed) {
         if (!answer.trim()) {
+          answer = '';
+          await api.streamChat(
+            { message: text, client_message_id: crypto.randomUUID(), mode: 'voice' },
+            (event, data) => {
+              if (event === 'delta' && typeof data.text === 'string') answer += data.text;
+              else if (event === 'done' && typeof data.conversation_id === 'string') conversationIdRef.current = data.conversation_id;
+              else if (event === 'error') {
+                failed = true;
+                setError(typeof data.message === 'string' ? data.message : 'Conversation failed.');
+              }
+            },
+            controller.signal,
+          );
+        }
+        if (!failed && !answer.trim()) {
           setError('JARVIS returned an empty reply. Please try again.');
           failed = true;
-        } else {
+        } else if (!failed) {
           await speakReply(answer);
         }
       }
