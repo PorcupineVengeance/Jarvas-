@@ -2,7 +2,25 @@
 name = "jarvisai"
 version = "1.1.0"
 requires-python = ">=3.11"
-dependencies = []
+# Mirror requirements.txt so Vercel `pip install .` still gets runtime deps.
+dependencies = [
+  "fastapi==0.115.12",
+  "uvicorn==0.34.0",
+  "pydantic-settings==2.7.1",
+  "SQLAlchemy>=2.0.40",
+  "alembic==1.14.0",
+  "PyMySQL==1.1.1",
+  "psycopg[binary]>=3.2.10",
+  "PyJWT[crypto]==2.10.1",
+  "httpx==0.28.1",
+  "psutil==6.1.1",
+  "python-multipart==0.0.20",
+  "pypdf==5.1.0",
+  "python-docx==1.1.2",
+  "openpyxl==3.1.5",
+  "ddgs==9.0.0",
+  "Pillow>=11.1.0",
+]
 
 [tool.vercel]
 entrypoint = "asgi:app"

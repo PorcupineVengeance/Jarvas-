@@ -1,5 +1,5 @@
 fastapi==0.115.12
-uvicorn[standard]==0.34.0
+uvicorn==0.34.0
 pydantic-settings==2.7.1
 SQLAlchemy>=2.0.40
 alembic==1.14.0
@@ -14,7 +14,3 @@ python-docx==1.1.2
 openpyxl==3.1.5
 ddgs==9.0.0
 Pillow>=11.1.0
-# Optional local desktop control (not needed on Vercel/serverless).
-# pyautogui==0.9.54
-pytest==8.3.4
-pytest-asyncio==0.25.2

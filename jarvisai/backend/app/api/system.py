@@ -28,9 +28,17 @@ def system_status(db: Session = Depends(get_db), user: User = Depends(get_curren
     except Exception:
         database_connected = False
     active_tasks = db.scalar(select(func.count()).select_from(Task).where(Task.owner_id == user.open_id, Task.status == "in_progress")) if database_connected else 0
-    process = psutil.Process(os.getpid())
-    memory = psutil.virtual_memory()
-    disk = psutil.disk_usage("/")
+    try:
+        process = psutil.Process(os.getpid())
+        memory_percent = psutil.virtual_memory().percent
+        disk_percent = psutil.disk_usage("/").percent
+        cpu_percent = psutil.cpu_percent(interval=None)
+        active_processes = [{"name": process.name(), "memory_mb": round(process.memory_info().rss / (1024 * 1024), 1)}]
+    except Exception:
+        memory_percent = 0
+        disk_percent = 0
+        cpu_percent = 0
+        active_processes = []
     try:
         worker_count = min(64, max(1, int(os.getenv("WEB_CONCURRENCY", "1") or "1")))
     except ValueError:
@@ -50,11 +58,11 @@ def system_status(db: Session = Depends(get_db), user: User = Depends(get_curren
         "status": "online" if database_connected else "degraded",
         "api_connection": True,
         "time": datetime.now(timezone.utc),
-        "cpu_percent": psutil.cpu_percent(interval=None),
-        "memory_percent": memory.percent,
-        "disk_percent": disk.percent,
+        "cpu_percent": cpu_percent,
+        "memory_percent": memory_percent,
+        "disk_percent": disk_percent,
         "active_tasks": active_tasks or 0,
-        "active_processes": [{"name": process.name(), "memory_mb": round(process.memory_info().rss / (1024 * 1024), 1)}],
+        "active_processes": active_processes,
         "worker_count": worker_count,
         "connected_integrations": connected_integrations,
         "database": {"connected": database_connected},

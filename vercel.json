@@ -13,19 +13,19 @@
   "rewrites": [
     {
       "source": "/api/(.*)",
-      "destination": { "service": "jarvisai" }
+      "destination": { "service": "jarvisai", "path": "/api/$1" }
     },
     {
       "source": "/docs",
-      "destination": { "service": "jarvisai" }
+      "destination": { "service": "jarvisai", "path": "/docs" }
     },
     {
       "source": "/openapi.json",
-      "destination": { "service": "jarvisai" }
+      "destination": { "service": "jarvisai", "path": "/openapi.json" }
     },
     {
       "source": "/manus-routes.json",
-      "destination": { "service": "jarvisai" }
+      "destination": { "service": "jarvisai", "path": "/manus-routes.json" }
     },
     {
       "source": "/(.*)",

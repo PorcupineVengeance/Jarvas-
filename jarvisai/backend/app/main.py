@@ -32,21 +32,23 @@ FRONTEND_DIR = PROJECT_ROOT / "frontend" / "dist"
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     settings = get_settings()
-    try:
-        ensure_app_storage()
-    except Exception:
-        logger.exception("Storage init failed; continuing with limited file features.")
-    for folder in ("data", "logs"):
+    on_vercel = bool(__import__("os").getenv("VERCEL"))
+    if not on_vercel:
         try:
-            Path(folder).mkdir(exist_ok=True)
+            ensure_app_storage()
         except Exception:
-            logger.warning("Could not create %s directory", folder)
+            logger.exception("Storage init failed; continuing with limited file features.")
+        for folder in ("data", "logs"):
+            try:
+                Path(folder).mkdir(exist_ok=True)
+            except Exception:
+                logger.warning("Could not create %s directory", folder)
     try:
         Base.metadata.create_all(bind=get_engine())
     except Exception:
         logger.exception("Database init failed; API may be degraded.")
     logger.info(
-        "JARVIS ready | llm=%s research=%s stt=%s tts=%s local_auth=%s open_access=%s computer=%s",
+        "JARVIS ready | llm=%s research=%s stt=%s tts=%s local_auth=%s open_access=%s computer=%s vercel=%s",
         settings.llm_ready,
         settings.research_ready,
         settings.transcription_ready,
@@ -54,10 +56,14 @@ async def lifespan(_app: FastAPI):
         settings.local_auth_ready,
         settings.jarvis_open_access,
         settings.jarvis_enable_computer_control,
+        on_vercel,
     )
     yield
-    from app.services.http_client import close_http_client
-    await close_http_client()
+    try:
+        from app.services.http_client import close_http_client
+        await close_http_client()
+    except Exception:
+        logger.exception("HTTP client shutdown failed")
 
 
 app = FastAPI(
@@ -137,11 +143,16 @@ def _serve_frontend(path: str):
 
 @app.get("/", include_in_schema=False)
 def root():
+    # On Vercel the Vite service owns the UI; keep API root informative.
+    if __import__("os").getenv("VERCEL"):
+        return {"service": "jarvis-api", "status": "ok", "docs": "/docs"}
     return _serve_frontend("")
 
 
 @app.get("/{path:path}", include_in_schema=False)
 def frontend_or_spa(path: str):
     if path == "api" or path.startswith(("api/", "manus-storage/", "__manus/", "__system__/")):
+        return JSONResponse(status_code=404, content={"detail": "Not found."})
+    if __import__("os").getenv("VERCEL"):
         return JSONResponse(status_code=404, content={"detail": "Not found."})
     return _serve_frontend(path)
