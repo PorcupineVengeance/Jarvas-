@@ -32,17 +32,27 @@ FRONTEND_DIR = PROJECT_ROOT / "frontend" / "dist"
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     settings = get_settings()
-    ensure_app_storage()
-    Path("data").mkdir(exist_ok=True)
-    Path("logs").mkdir(exist_ok=True)
-    Base.metadata.create_all(bind=get_engine())
+    try:
+        ensure_app_storage()
+    except Exception:
+        logger.exception("Storage init failed; continuing with limited file features.")
+    for folder in ("data", "logs"):
+        try:
+            Path(folder).mkdir(exist_ok=True)
+        except Exception:
+            logger.warning("Could not create %s directory", folder)
+    try:
+        Base.metadata.create_all(bind=get_engine())
+    except Exception:
+        logger.exception("Database init failed; API may be degraded.")
     logger.info(
-        "JARVIS ready | llm=%s research=%s stt=%s tts=%s local_auth=%s computer=%s",
+        "JARVIS ready | llm=%s research=%s stt=%s tts=%s local_auth=%s open_access=%s computer=%s",
         settings.llm_ready,
         settings.research_ready,
         settings.transcription_ready,
         settings.tts_ready,
         settings.local_auth_ready,
+        settings.jarvis_open_access,
         settings.jarvis_enable_computer_control,
     )
     yield
@@ -80,7 +90,14 @@ _rate_windows: dict[str, deque[float]] = defaultdict(deque)
 
 @app.middleware("http")
 async def security_and_rate_limit(request: Request, call_next):
-    if request.method in {"POST", "PUT", "PATCH", "DELETE"} and request.url.path.startswith("/api/") and not request_origin_is_trusted(request):
+    settings = get_settings()
+    # Open access (and same-site Vercel rewrites) should not block browser POSTs.
+    if (
+        request.method in {"POST", "PUT", "PATCH", "DELETE"}
+        and request.url.path.startswith("/api/")
+        and not settings.jarvis_open_access
+        and not request_origin_is_trusted(request)
+    ):
         return JSONResponse(status_code=403, content={"detail": "Cross-origin state changes are not allowed."})
     if request.url.path.startswith("/api/") and request.url.path not in {"/api/health", "/api/auth/session", "/api/auth/config"}:
         key = request.client.host if request.client else "unknown"

@@ -17,11 +17,15 @@ def normalize_database_url(url: str) -> str:
 
 
 def build_engine(url: str | None = None) -> Engine:
-    database_url = normalize_database_url(url or get_settings().database_url or "sqlite:///./data/jarvis.db")
+    database_url = normalize_database_url(url or get_settings().resolved_database_url)
     engine_options: dict = {"pool_pre_ping": True}
     if database_url.startswith("sqlite:"):
-        if database_url.startswith("sqlite:///./"):
-            Path(database_url.removeprefix("sqlite:///./")).parent.mkdir(parents=True, exist_ok=True)
+        raw_path = database_url.removeprefix("sqlite:///")
+        if raw_path.startswith("./") or raw_path.startswith("tmp/") or raw_path.startswith("/"):
+            path = Path(raw_path)
+            if not path.is_absolute():
+                path = Path.cwd() / path
+            path.parent.mkdir(parents=True, exist_ok=True)
         engine_options["connect_args"] = {"check_same_thread": False, "timeout": 15}
     return create_engine(database_url, **engine_options)
 

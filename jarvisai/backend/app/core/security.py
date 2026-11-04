@@ -70,8 +70,11 @@ def decode_session(token: str) -> dict:
         if not settings.oauth_ready or claims.get("appId") != settings.manus_project_id:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Your session is not valid for this application.")
     elif auth_mode == "local":
-        if not settings.local_auth_ready:
+        if not settings.local_auth_ready and not settings.jarvis_open_access:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Local authentication is disabled.")
+    elif auth_mode == "open":
+        if not settings.jarvis_open_access:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Open access is disabled.")
     else:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Your session is not valid for this application.")
     return claims

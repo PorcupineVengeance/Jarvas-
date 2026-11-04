@@ -34,24 +34,48 @@ def _safe_origin(request: Request, supplied: str | None = None, check_header: bo
 @router.get("/config")
 def auth_config():
     settings = get_settings()
+    if settings.jarvis_open_access:
+        return {
+            "available": True,
+            "provider": "Open access",
+            "local_available": True,
+            "open_access": True,
+            "reason": None,
+        }
     if settings.oauth_ready:
-        return {"available": True, "provider": "Manus OAuth", "local_available": settings.local_auth_ready, "reason": None}
+        return {"available": True, "provider": "Manus OAuth", "local_available": settings.local_auth_ready, "open_access": False, "reason": None}
     if settings.local_auth_ready:
-        return {"available": True, "provider": "Local session", "local_available": True, "reason": None}
-    return {"available": False, "provider": "none", "local_available": False, "reason": "Configure Manus OAuth or enable JARVIS_LOCAL_AUTH_ENABLED with JARVIS_LOCAL_AUTH_SECRET."}
+        return {"available": True, "provider": "Local session", "local_available": True, "open_access": False, "reason": None}
+    return {"available": False, "provider": "none", "local_available": False, "open_access": False, "reason": "Configure Manus OAuth or enable JARVIS_LOCAL_AUTH_ENABLED with JARVIS_LOCAL_AUTH_SECRET."}
 
 
 @router.get("/session")
 def session(request: Request):
     from app.core.security import decode_session
+    settings = get_settings()
     token = request.cookies.get(SESSION_COOKIE)
-    if not token:
-        return {"authenticated": False}
-    try:
-        claims = decode_session(token)
-        return {"authenticated": True, "user": {"id": claims["openId"], "name": claims.get("name", "JARVIS user"), "email": claims.get("email")}}
-    except HTTPException:
-        return {"authenticated": False}
+    if token:
+        try:
+            claims = decode_session(token)
+            return {
+                "authenticated": True,
+                "open_access": settings.jarvis_open_access,
+                "user": {"id": claims["openId"], "name": claims.get("name", "JARVIS user"), "email": claims.get("email")},
+            }
+        except HTTPException:
+            if not settings.jarvis_open_access:
+                return {"authenticated": False, "open_access": False}
+    if settings.jarvis_open_access:
+        return {
+            "authenticated": True,
+            "open_access": True,
+            "user": {
+                "id": "local-operator",
+                "name": settings.jarvis_local_auth_display_name or "Operator",
+                "email": None,
+            },
+        }
+    return {"authenticated": False, "open_access": False}
 
 
 class LocalLoginRequest(BaseModel):
@@ -61,12 +85,15 @@ class LocalLoginRequest(BaseModel):
 @router.post("/local-login")
 def local_login(request: Request, response: Response, body: LocalLoginRequest | None = None):
     settings = get_settings()
-    if not settings.local_auth_ready:
+    if not settings.local_auth_ready and not settings.jarvis_open_access:
         raise HTTPException(status_code=503, detail="Local authentication is not enabled. Set JARVIS_LOCAL_AUTH_ENABLED and JARVIS_LOCAL_AUTH_SECRET.")
     origin = request.headers.get("origin")
-    if origin and not is_allowed_request_origin(request, origin):
+    if origin and not settings.jarvis_open_access and not is_allowed_request_origin(request, origin):
         raise HTTPException(status_code=403, detail="Cross-origin local sign-in is not allowed.")
     name = ((body.display_name if body else None) or settings.jarvis_local_auth_display_name or "Operator").strip()[:120] or "Operator"
+    secret = settings.session_local_secret
+    if not secret:
+        raise HTTPException(status_code=503, detail="Local authentication secret is missing.")
     now = datetime.now(timezone.utc)
     claims = {
         "openId": "local-operator",
@@ -77,10 +104,10 @@ def local_login(request: Request, response: Response, body: LocalLoginRequest | 
         "iat": now,
         "exp": now + timedelta(seconds=settings.jarvis_session_ttl_seconds),
     }
-    token = jwt.encode(claims, settings.jarvis_local_auth_secret, algorithm="HS256")
+    token = jwt.encode(claims, secret, algorithm="HS256")
     cookie = session_cookie_options(origin)
     response.set_cookie(value=token, **cookie)
-    return {"ok": True, "authenticated": True, "user": {"id": "local-operator", "name": name, "email": None}}
+    return {"ok": True, "authenticated": True, "open_access": settings.jarvis_open_access, "user": {"id": "local-operator", "name": name, "email": None}}
 
 
 @router.get("/login")

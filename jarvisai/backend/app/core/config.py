@@ -1,4 +1,5 @@
 from functools import lru_cache
+import os
 from pathlib import Path
 
 from pydantic import Field
@@ -42,6 +43,7 @@ class Settings(BaseSettings):
     jarvis_tts_model: str | None = None
     jarvis_tts_voice: str = ""
     jarvis_allowed_origins: str = ""
+    jarvis_open_access: bool = True
     jarvis_local_auth_enabled: bool = True
     jarvis_local_auth_secret: str | None = Field(default=None, repr=False)
     jarvis_local_auth_display_name: str = "Operator"
@@ -105,19 +107,35 @@ class Settings(BaseSettings):
 
     @property
     def local_auth_ready(self) -> bool:
-        return bool(self.jarvis_local_auth_enabled and self.jarvis_local_auth_secret and len(self.jarvis_local_auth_secret) >= 16)
+        return bool(self.jarvis_local_auth_enabled and self.session_local_secret)
+
+    @property
+    def session_local_secret(self) -> str | None:
+        if self.jarvis_local_auth_secret and len(self.jarvis_local_auth_secret) >= 16:
+            return self.jarvis_local_auth_secret
+        # Open-access deploys (e.g. Vercel) can run without a configured secret.
+        if self.jarvis_open_access:
+            return "jarvis-open-access-fallback-secret"
+        return None
 
     @property
     def auth_ready(self) -> bool:
-        return self.oauth_ready or self.local_auth_ready
+        return self.oauth_ready or self.local_auth_ready or self.jarvis_open_access
 
     @property
     def session_signing_secret(self) -> str | None:
         if self.oauth_ready:
             return self.manus_jwt_secret
-        if self.local_auth_ready:
-            return self.jarvis_local_auth_secret
-        return None
+        return self.session_local_secret
+
+    @property
+    def resolved_database_url(self) -> str:
+        if self.database_url:
+            return self.database_url
+        # Vercel/serverless filesystems are read-only except /tmp.
+        if os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME"):
+            return "sqlite:////tmp/jarvis.db"
+        return "sqlite:///./data/jarvis.db"
 
     @property
     def transcription_ready(self) -> bool:
@@ -154,9 +172,13 @@ class Settings(BaseSettings):
 
     @property
     def storage_path(self) -> Path:
-        path = Path(self.jarvis_storage_dir).expanduser()
-        if not path.is_absolute():
-            path = Path.cwd() / path
+        raw = self.jarvis_storage_dir
+        if (os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME")) and raw in {"./storage", "storage"}:
+            path = Path("/tmp/jarvis-storage")
+        else:
+            path = Path(raw).expanduser()
+            if not path.is_absolute():
+                path = Path.cwd() / path
         return path.resolve()
 
     @property

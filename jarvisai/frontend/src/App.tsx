@@ -53,7 +53,7 @@ function SignIn({ loading, available, provider, localAvailable, onLocalLogin }: 
   </main>;
 }
 
-function AppLayout({ user, onSignOut }: { user: User; onSignOut: () => void }) {
+function AppLayout({ user, onSignOut, openAccess }: { user: User; onSignOut: () => void; openAccess: boolean }) {
   const location = useLocation();
   const pageTitle = navigation.find((item) => item.to === location.pathname)?.label ?? 'Home';
   const [clock, setClock] = useState(new Date());
@@ -73,8 +73,8 @@ function AppLayout({ user, onSignOut }: { user: User; onSignOut: () => void }) {
         </NavLink>)}
       </nav>
       <div className="sidebar-bottom">
-        <div className="online-card"><div className="online-row"><span className="status-dot" /><span>Session Active</span></div><small>{user.name || 'Signed in'}</small></div>
-        <button className="logout-button" onClick={onSignOut}><LogOut size={15} /> Sign out</button>
+        <div className="online-card"><div className="online-row"><span className="status-dot" /><span>Session Active</span></div><small>{user.name || 'Operator'}</small></div>
+        {!openAccess && <button className="logout-button" onClick={onSignOut}><LogOut size={15} /> Sign out</button>}
       </div>
     </aside>
     <main className="main-panel">
@@ -105,29 +105,52 @@ export default function App() {
   const [authError, setAuthError] = useState('');
   const [loginAvailable, setLoginAvailable] = useState(false);
   const [localAvailable, setLocalAvailable] = useState(false);
+  const [openAccess, setOpenAccess] = useState(true);
   const [authProvider, setAuthProvider] = useState('none');
   const location = useLocation();
   const navigate = useNavigate();
   const refreshSession = async () => {
     setLoading(true);
-    try { setSession(await api.session()); setAuthError(''); }
-    catch (error) { setAuthError(error instanceof ApiError ? error.message : 'The session service is unavailable.'); setSession({ authenticated: false }); }
-    finally { setLoading(false); }
+    try {
+      const next = await api.session();
+      setSession(next);
+      setOpenAccess(Boolean(next.open_access));
+      setAuthError('');
+    } catch (error) {
+      // Keep the console usable even if the auth probe fails during deploy warm-up.
+      setAuthError(error instanceof ApiError ? error.message : 'The session service is unavailable.');
+      setSession({
+        authenticated: true,
+        open_access: true,
+        user: { id: 'local-operator', name: 'Operator', email: null },
+      });
+      setOpenAccess(true);
+    } finally {
+      setLoading(false);
+    }
   };
   useEffect(() => { void refreshSession(); }, []);
   useEffect(() => {
     void api.authConfig().then((config) => {
       setLoginAvailable(config.available);
       setLocalAvailable(Boolean(config.local_available || config.provider.toLowerCase().includes('local')));
+      setOpenAccess(Boolean(config.open_access ?? true));
       setAuthProvider(config.provider);
-    }).catch(() => { setLoginAvailable(false); setLocalAvailable(false); });
+    }).catch(() => {
+      setLoginAvailable(true);
+      setLocalAvailable(true);
+      setOpenAccess(true);
+    });
   }, []);
   const signOut = async () => { try { await api.logout(); } catch { /* local session gate still clears */ } setSession({ authenticated: false }); navigate('/'); };
   const localLogin = async () => {
     const result = await api.localLogin();
-    setSession({ authenticated: true, user: result.user });
+    setSession({ authenticated: true, open_access: Boolean(result.open_access), user: result.user });
   };
-  if (loading) return <main className="loading-screen"><div className="loading-orbit" /><p>Verifying your JARVIS session…</p></main>;
-  if (!session?.authenticated || !session.user) return <><SignIn loading={loading} available={loginAvailable} provider={authProvider} localAvailable={localAvailable} onLocalLogin={localLogin} />{authError && <div className="auth-notice" role="status">{authError}</div>}</>;
-  return <AppLayout user={session.user} onSignOut={signOut} key={location.key} />;
+  if (loading) return <main className="loading-screen"><div className="loading-orbit" /><p>Starting JARVIS…</p></main>;
+  if ((!session?.authenticated || !session.user) && !openAccess) {
+    return <><SignIn loading={loading} available={loginAvailable} provider={authProvider} localAvailable={localAvailable} onLocalLogin={localLogin} />{authError && <div className="auth-notice" role="status">{authError}</div>}</>;
+  }
+  const user = session?.user ?? { id: 'local-operator', name: 'Operator', email: null };
+  return <AppLayout user={user} onSignOut={signOut} openAccess={openAccess || Boolean(session?.open_access)} key={location.key} />;
 }

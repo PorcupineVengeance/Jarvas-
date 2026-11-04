@@ -1,5 +1,5 @@
 export type User = { id: string; name: string; email?: string | null };
-export type Session = { authenticated: boolean; user?: User };
+export type Session = { authenticated: boolean; open_access?: boolean; user?: User };
 export type Task = { id: string; title: string; description?: string | null; status: string; priority: string; due_at?: string | null; created_at: string; updated_at: string };
 export type MemoryItem = { id: string; category: string; content: string; created_at: string; updated_at: string };
 export type Integration = { id: string; name: string; configured: boolean; status: string; detail: string };
@@ -25,10 +25,10 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
-  authConfig: () => request<{ available: boolean; provider: string; local_available?: boolean; reason: string | null }>('/api/auth/config'),
+  authConfig: () => request<{ available: boolean; provider: string; local_available?: boolean; open_access?: boolean; reason: string | null }>('/api/auth/config'),
   session: () => request<Session>('/api/auth/session'),
   login: () => { window.location.assign(`/api/auth/login?origin=${encodeURIComponent(window.location.origin)}`); },
-  localLogin: (displayName?: string) => request<{ ok: boolean; authenticated: boolean; user: User }>('/api/auth/local-login', { method: 'POST', body: JSON.stringify({ display_name: displayName || undefined }) }),
+  localLogin: (displayName?: string) => request<{ ok: boolean; authenticated: boolean; open_access?: boolean; user: User }>('/api/auth/local-login', { method: 'POST', body: JSON.stringify({ display_name: displayName || undefined }) }),
   logout: () => request<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
   status: () => request<AppStatus>('/api/system/status'),
   integrations: () => request<{ items: Integration[]; checked_at: string }>('/api/integrations'),
