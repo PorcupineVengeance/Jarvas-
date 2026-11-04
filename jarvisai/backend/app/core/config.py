@@ -130,11 +130,13 @@ class Settings(BaseSettings):
 
     @property
     def resolved_database_url(self) -> str:
-        if self.database_url:
-            return self.database_url
-        # Vercel/serverless filesystems are read-only except /tmp.
-        if os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME"):
+        on_serverless = bool(os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME"))
+        url = (self.database_url or "").strip()
+        # Vercel/serverless filesystems are read-only except /tmp — never use ./data there.
+        if on_serverless and (not url or url.startswith("sqlite:")):
             return "sqlite:////tmp/jarvis.db"
+        if url:
+            return url
         return "sqlite:///./data/jarvis.db"
 
     @property

@@ -5,6 +5,8 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker, Session
 from app.core.config import get_settings
 
+_schema_ready = False
+
 
 def normalize_database_url(url: str) -> str:
     if url.startswith("mysql://"):
@@ -40,7 +42,19 @@ def get_session_factory() -> sessionmaker[Session]:
     return sessionmaker(bind=get_engine(), autoflush=False, autocommit=False, expire_on_commit=False)
 
 
+def ensure_schema() -> None:
+    global _schema_ready
+    if _schema_ready:
+        return
+    from app.database.base import Base
+    import app.models  # noqa: F401 — register metadata
+
+    Base.metadata.create_all(bind=get_engine())
+    _schema_ready = True
+
+
 def get_db():
+    ensure_schema()
     db = get_session_factory()()
     try:
         yield db
