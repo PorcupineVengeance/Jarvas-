@@ -92,3 +92,31 @@ class ToolExecution(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     result_summary: Mapped[str | None] = mapped_column(String(240), nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+
+
+class Reminder(Base):
+    __tablename__ = "jarvis_reminders"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(ForeignKey("jarvis_users.open_id", ondelete="CASCADE"), index=True)
+    title: Mapped[str] = mapped_column(String(250))
+    remind_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    recurring: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(24), default="scheduled")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    fired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class OrchestrationJob(Base):
+    __tablename__ = "jarvis_orchestration_jobs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(ForeignKey("jarvis_users.open_id", ondelete="CASCADE"), index=True)
+    title: Mapped[str] = mapped_column(String(250))
+    status: Mapped[str] = mapped_column(String(24), default="pending")
+    plan_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    result_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

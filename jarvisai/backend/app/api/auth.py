@@ -7,6 +7,7 @@ import httpx
 import jwt
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel, Field
 from app.core.config import get_settings
 from app.core.security import SESSION_COOKIE, is_allowed_request_origin, session_cookie_options
 
@@ -33,7 +34,11 @@ def _safe_origin(request: Request, supplied: str | None = None, check_header: bo
 @router.get("/config")
 def auth_config():
     settings = get_settings()
-    return {"available": settings.oauth_ready, "provider": "Manus OAuth", "reason": None if settings.oauth_ready else "Manus OAuth settings are not present in this runtime."}
+    if settings.oauth_ready:
+        return {"available": True, "provider": "Manus OAuth", "local_available": settings.local_auth_ready, "reason": None}
+    if settings.local_auth_ready:
+        return {"available": True, "provider": "Local session", "local_available": True, "reason": None}
+    return {"available": False, "provider": "none", "local_available": False, "reason": "Configure Manus OAuth or enable JARVIS_LOCAL_AUTH_ENABLED with JARVIS_LOCAL_AUTH_SECRET."}
 
 
 @router.get("/session")
@@ -49,11 +54,40 @@ def session(request: Request):
         return {"authenticated": False}
 
 
+class LocalLoginRequest(BaseModel):
+    display_name: str | None = Field(default=None, max_length=120)
+
+
+@router.post("/local-login")
+def local_login(request: Request, response: Response, body: LocalLoginRequest | None = None):
+    settings = get_settings()
+    if not settings.local_auth_ready:
+        raise HTTPException(status_code=503, detail="Local authentication is not enabled. Set JARVIS_LOCAL_AUTH_ENABLED and JARVIS_LOCAL_AUTH_SECRET.")
+    origin = request.headers.get("origin")
+    if origin and not is_allowed_request_origin(request, origin):
+        raise HTTPException(status_code=403, detail="Cross-origin local sign-in is not allowed.")
+    name = ((body.display_name if body else None) or settings.jarvis_local_auth_display_name or "Operator").strip()[:120] or "Operator"
+    now = datetime.now(timezone.utc)
+    claims = {
+        "openId": "local-operator",
+        "appId": "jarvis-local",
+        "authMode": "local",
+        "name": name,
+        "email": None,
+        "iat": now,
+        "exp": now + timedelta(seconds=settings.jarvis_session_ttl_seconds),
+    }
+    token = jwt.encode(claims, settings.jarvis_local_auth_secret, algorithm="HS256")
+    cookie = session_cookie_options(origin)
+    response.set_cookie(value=token, **cookie)
+    return {"ok": True, "authenticated": True, "user": {"id": "local-operator", "name": name, "email": None}}
+
+
 @router.get("/login")
 def login(request: Request, origin: str | None = None):
     settings = get_settings()
     if not settings.oauth_ready:
-        raise HTTPException(status_code=503, detail="Manus OAuth is not available in this runtime. Configure the project OAuth settings to enable sign-in.")
+        raise HTTPException(status_code=503, detail="Manus OAuth is not available. Use local sign-in when JARVIS_LOCAL_AUTH_ENABLED is configured.")
     public_origin = _safe_origin(request, origin)
     callback = f"{public_origin}/api/auth/callback"
     nonce = secrets.token_urlsafe(24)
@@ -103,7 +137,15 @@ async def callback(request: Request, code: str, state: str):
     if not open_id:
         raise HTTPException(status_code=502, detail="Manus sign-in returned no user identity.")
     now = datetime.now(timezone.utc)
-    claims = {"openId": str(open_id), "appId": settings.manus_project_id, "name": str(user_info.get("name") or "JARVIS user"), "email": user_info.get("email"), "iat": now, "exp": now + timedelta(seconds=settings.jarvis_session_ttl_seconds)}
+    claims = {
+        "openId": str(open_id),
+        "appId": settings.manus_project_id,
+        "authMode": "manus",
+        "name": str(user_info.get("name") or "JARVIS user"),
+        "email": user_info.get("email"),
+        "iat": now,
+        "exp": now + timedelta(seconds=settings.jarvis_session_ttl_seconds),
+    }
     app_token = jwt.encode(claims, settings.manus_jwt_secret, algorithm="HS256")
     response = RedirectResponse(public_origin + "/", status_code=303)
     response.set_cookie(value=app_token, **session_cookie_options(public_origin))

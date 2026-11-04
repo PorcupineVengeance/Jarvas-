@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from pathlib import PurePath
+from pathlib import PurePath, Path
 from uuid import uuid4
 from hashlib import sha256
 from io import BytesIO
@@ -7,7 +7,7 @@ import csv
 import json
 import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from fastapi.responses import RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -15,6 +15,7 @@ from app.api.dependencies import get_current_user
 from app.core.config import get_settings
 from app.database.session import get_db
 from app.models import StoredFile, User
+from app.services.file_manager import ensure_app_storage
 from app.services.llm import ProviderRequestFailed, complete
 
 router = APIRouter(prefix="/api/files", tags=["files"])
@@ -54,27 +55,34 @@ def extract_text(name: str, raw: bytes) -> str:
     return ""
 
 
-async def put_object(key: str, raw: bytes, content_type: str) -> None:
+async def put_object(key: str, raw: bytes, content_type: str) -> str:
+    """Store bytes in Manus object storage when available, otherwise local disk. Returns backend kind."""
     settings = get_settings()
-    if not settings.manus_service_ready or not settings.api_base:
-        raise HTTPException(status_code=503, detail="Managed object storage is unavailable in this runtime.")
-    base = f"{settings.api_base}/v1/storage/presign/put"
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(45.0, connect=8.0)) as client:
-            presign = await client.get(base, headers={"Authorization": f"Bearer {settings.manus_api_key}"}, params={"path": key})
-            if presign.is_error:
-                raise HTTPException(status_code=503, detail="The storage service could not authorize this upload.")
-            data = presign.json()
-            signed_url = data.get("url")
-            if not signed_url:
-                raise HTTPException(status_code=503, detail="The storage service returned no upload URL.")
-            result = await client.put(signed_url, content=raw, headers={"Content-Type": content_type})
-            if result.is_error:
-                raise HTTPException(status_code=502, detail="The storage upload did not complete.")
-    except httpx.TimeoutException as exc:
-        raise HTTPException(status_code=504, detail="The storage upload timed out.") from exc
-    except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail="The storage service could not be reached.") from exc
+    if settings.manus_service_ready and settings.api_base:
+        base = f"{settings.api_base}/v1/storage/presign/put"
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(45.0, connect=8.0)) as client:
+                presign = await client.get(base, headers={"Authorization": f"Bearer {settings.manus_api_key}"}, params={"path": key})
+                if presign.is_error:
+                    raise HTTPException(status_code=503, detail="The storage service could not authorize this upload.")
+                data = presign.json()
+                signed_url = data.get("url")
+                if not signed_url:
+                    raise HTTPException(status_code=503, detail="The storage service returned no upload URL.")
+                result = await client.put(signed_url, content=raw, headers={"Content-Type": content_type})
+                if result.is_error:
+                    raise HTTPException(status_code=502, detail="The storage upload did not complete.")
+            return "manus"
+        except httpx.TimeoutException as exc:
+            raise HTTPException(status_code=504, detail="The storage upload timed out.") from exc
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail="The storage service could not be reached.") from exc
+
+    root = ensure_app_storage()
+    local_path = root / "uploads" / key
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    local_path.write_bytes(raw)
+    return "local"
 
 
 class FileView(BaseModel):
@@ -88,6 +96,12 @@ class FileView(BaseModel):
 
 class FileDeleteConfirmation(BaseModel):
     confirmed: bool = False
+
+
+def _asset_path(row: StoredFile) -> str:
+    if row.object_key and row.object_key.startswith("local:"):
+        return f"/api/files/{row.id}/download"
+    return f"/manus-storage/{row.object_key}"
 
 
 @router.post("", response_model=FileView, status_code=201)
@@ -104,18 +118,19 @@ async def upload_file(file: UploadFile = File(...), db: Session = Depends(get_db
     object_id = str(uuid4())
     owner_tag = sha256(user.open_id.encode()).hexdigest()[:16]
     key = f"jarvis/users/{owner_tag}/{object_id}/{filename.replace('/', '_')}"
-    await put_object(key, raw, content_type)
-    record = StoredFile(id=object_id, owner_id=user.open_id, filename=filename, object_key=key, content_type=content_type, size_bytes=len(raw), extracted_text=extracted)
+    backend = await put_object(key, raw, content_type)
+    stored_key = f"local:{key}" if backend == "local" else key
+    record = StoredFile(id=object_id, owner_id=user.open_id, filename=filename, object_key=stored_key, content_type=content_type, size_bytes=len(raw), extracted_text=extracted)
     db.add(record)
     db.commit()
     db.refresh(record)
-    return FileView(id=record.id, filename=record.filename, content_type=record.content_type, size_bytes=record.size_bytes, created_at=record.created_at, asset_path=f"/manus-storage/{key}")
+    return FileView(id=record.id, filename=record.filename, content_type=record.content_type, size_bytes=record.size_bytes, created_at=record.created_at, asset_path=_asset_path(record))
 
 
 @router.get("", response_model=list[FileView])
 def list_files(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     rows = db.scalars(select(StoredFile).where(StoredFile.owner_id == user.open_id, StoredFile.deleted_at.is_(None)).order_by(StoredFile.created_at.desc()).limit(200)).all()
-    return [FileView(id=row.id, filename=row.filename, content_type=row.content_type, size_bytes=row.size_bytes, created_at=row.created_at, asset_path=f"/manus-storage/{row.object_key}") for row in rows]
+    return [FileView(id=row.id, filename=row.filename, content_type=row.content_type, size_bytes=row.size_bytes, created_at=row.created_at, asset_path=_asset_path(row)) for row in rows]
 
 
 @router.get("/{file_id}")
@@ -123,7 +138,7 @@ def get_file(file_id: str, db: Session = Depends(get_db), user: User = Depends(g
     row = db.scalar(select(StoredFile).where(StoredFile.id == file_id, StoredFile.owner_id == user.open_id, StoredFile.deleted_at.is_(None)))
     if row is None:
         raise HTTPException(status_code=404, detail="File not found.")
-    return {"id": row.id, "filename": row.filename, "content_type": row.content_type, "size_bytes": row.size_bytes, "created_at": row.created_at, "asset_path": f"/manus-storage/{row.object_key}", "extracted_text": row.extracted_text or ""}
+    return {"id": row.id, "filename": row.filename, "content_type": row.content_type, "size_bytes": row.size_bytes, "created_at": row.created_at, "asset_path": _asset_path(row), "extracted_text": row.extracted_text or ""}
 
 
 @router.get("/{file_id}/download")
@@ -131,6 +146,12 @@ async def download_file(file_id: str, db: Session = Depends(get_db), user: User 
     row = db.scalar(select(StoredFile).where(StoredFile.id == file_id, StoredFile.owner_id == user.open_id, StoredFile.deleted_at.is_(None)))
     if row is None or not row.object_key:
         raise HTTPException(status_code=404, detail="File not found.")
+    if row.object_key.startswith("local:"):
+        relative = row.object_key.removeprefix("local:")
+        path = ensure_app_storage() / "uploads" / relative
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="Local file bytes were not found.")
+        return FileResponse(path, filename=row.filename, media_type=row.content_type, headers={"Cache-Control": "no-store"})
     settings = get_settings()
     if not settings.manus_service_ready or not settings.api_base:
         raise HTTPException(status_code=503, detail="Managed object storage is unavailable.")
@@ -151,9 +172,17 @@ def soft_delete_file(file_id: str, body: FileDeleteConfirmation, db: Session = D
     row = db.scalar(select(StoredFile).where(StoredFile.id == file_id, StoredFile.owner_id == user.open_id, StoredFile.deleted_at.is_(None)))
     if row is None:
         raise HTTPException(status_code=404, detail="File not found.")
+    if row.object_key and row.object_key.startswith("local:"):
+        relative = row.object_key.removeprefix("local:")
+        path = ensure_app_storage() / "uploads" / relative
+        if path.is_file():
+            path.unlink()
+        row.deleted_at = datetime.now(timezone.utc)
+        db.commit()
+        return {"ok": True, "deletion": "local_removed", "detail": "Local file bytes and metadata were removed."}
     row.deleted_at = datetime.now(timezone.utc)
     db.commit()
-    return {"ok": True, "deletion": "metadata_hidden", "detail": "The application record is hidden. This runtime storage API does not physically delete the stored object."}
+    return {"ok": True, "deletion": "metadata_hidden", "detail": "The application record is hidden. Managed object storage does not physically delete the stored object via this API."}
 
 
 class ReportCreate(BaseModel):
@@ -173,10 +202,13 @@ async def save_report(body: ReportCreate, db: Session = Depends(get_db), user: U
     owner_tag = sha256(user.open_id.encode()).hexdigest()[:16]
     key = f"jarvis/users/{owner_tag}/{record_id}/{filename}"
     content_type = "text/markdown" if filename.endswith(".md") else "text/plain"
-    await put_object(key, raw, content_type)
-    record = StoredFile(id=record_id, owner_id=user.open_id, filename=filename, object_key=key, content_type=content_type, size_bytes=len(raw), extracted_text=body.content)
-    db.add(record); db.commit(); db.refresh(record)
-    return FileView(id=record.id, filename=record.filename, content_type=record.content_type, size_bytes=record.size_bytes, created_at=record.created_at, asset_path=f"/manus-storage/{key}")
+    backend = await put_object(key, raw, content_type)
+    stored_key = f"local:{key}" if backend == "local" else key
+    record = StoredFile(id=record_id, owner_id=user.open_id, filename=filename, object_key=stored_key, content_type=content_type, size_bytes=len(raw), extracted_text=body.content)
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    return FileView(id=record.id, filename=record.filename, content_type=record.content_type, size_bytes=record.size_bytes, created_at=record.created_at, asset_path=_asset_path(record))
 
 
 @router.post("/{file_id}/summarize")

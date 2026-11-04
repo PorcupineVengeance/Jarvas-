@@ -1,6 +1,6 @@
 import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import { useLocation } from 'react-router-dom';
-import { Activity, AlertTriangle, Check, Clock3, CloudUpload, Download, File, FileText, LoaderCircle, Pencil, Plus, Search, ShieldCheck, Trash2, Wrench, X } from 'lucide-react';
+import { Activity, AlertTriangle, Check, Clock3, CloudUpload, Download, File, FileText, LoaderCircle, Pencil, Play, Plus, Search, ShieldCheck, Trash2, Wrench, X } from 'lucide-react';
 import { api, type FileRecord, type Integration, type MemoryItem, type Task, type Tool } from '../lib/api';
 
 type Summary = { fileId: string; filename: string; text: string; sourceScope: string };
@@ -39,6 +39,10 @@ export default function ToolsPage() {
   const [expandedFile, setExpandedFile] = useState<string | null>(null);
   const [extractedText, setExtractedText] = useState('');
   const [summary, setSummary] = useState<Summary | null>(null);
+  const [activeTool, setActiveTool] = useState<string | null>(null);
+  const [toolArgs, setToolArgs] = useState<Record<string, string>>({});
+  const [toolBusy, setToolBusy] = useState(false);
+  const [toolResult, setToolResult] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true); setError('');
@@ -130,13 +134,92 @@ export default function ToolsPage() {
 
   const statusLabel = (item: Integration) => item.status.replaceAll('_', ' ');
   const visibleMemories = useMemo(() => memories.filter((item) => !search || `${item.category} ${item.content}`.toLowerCase().includes(search.toLowerCase())), [memories, search]);
+
+  const openTool = (tool: Tool) => {
+    setActiveTool((current) => current === tool.id ? null : tool.id);
+    setToolResult('');
+    const props = (tool.input_schema?.properties || {}) as Record<string, { type?: string; enum?: string[] }>;
+    const next: Record<string, string> = {};
+    Object.keys(props).forEach((key) => { next[key] = toolArgs[key] || ''; });
+    setToolArgs(next);
+  };
+
+  const runTool = async (tool: Tool) => {
+    setToolBusy(true); setError(''); setToolResult(''); setNotice('');
+    const props = (tool.input_schema?.properties || {}) as Record<string, { type?: string }>;
+    const required = Array.isArray(tool.input_schema?.required) ? tool.input_schema.required as string[] : [];
+    const args: Record<string, unknown> = {};
+    for (const [key, schema] of Object.entries(props)) {
+      const raw = (toolArgs[key] || '').trim();
+      if (!raw) {
+        if (required.includes(key)) {
+          setError(`“${key}” is required for ${tool.name}.`);
+          setToolBusy(false);
+          return;
+        }
+        continue;
+      }
+      args[key] = schema.type === 'number' ? Number(raw) : raw;
+    }
+    try {
+      const result = await api.executeTool(tool.id, args, Boolean(tool.write));
+      setToolResult(JSON.stringify(result.result ?? result, null, 2));
+      setNotice(`${tool.name} finished (${result.status}).`);
+      if (tool.id.startsWith('tasks.') || tool.id.startsWith('memory.')) void load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Tool could not run.');
+    } finally {
+      setToolBusy(false);
+    }
+  };
+
   return <div className="page-stack tools-page">
     <div className="section-heading"><div><span className="eyebrow">CAPABILITIES</span><h2>Tools & workspace</h2><p>What is available right now, and what still needs a connection.</p></div><button className="secondary-button" onClick={() => void load()}><Activity size={15} /> Refresh status</button></div>
     {(error || notice) && <div className={error ? 'notice-error' : 'notice-success'} role={error ? 'alert' : 'status'}>{error || notice}</div>}
     <div className="tools-grid">
-      <section className="panel tool-section"><div className="section-title"><Wrench size={18} /><div><h3>Registered tools</h3><p>Only allow-listed operations can run.</p></div></div>
-        {loading ? <div className="loading-inline"><LoaderCircle className="spin" size={17} /> Loading tools…</div> : tools.map((tool) => <div className="tool-row" key={tool.id}><span className={`tool-icon ${tool.write ? 'tool-write' : ''}`}><Wrench size={16} /></span><div className="tool-copy"><strong>{tool.name}</strong><span>{tool.description}</span><small><code>{tool.id}</code> · {tool.permission} · {tool.write ? 'change' : 'read only'}</small></div><span className="readiness-chip ready"><i />Registered</span></div>)}
-        <div className="safety-note"><ShieldCheck size={16} /><span>No arbitrary shell access or personal desktop control is available from this hosted app.</span></div>
+      <section className="panel tool-section"><div className="section-title"><Wrench size={18} /><div><h3>Registered tools</h3><p>Run allow-listed operations with your confirmation.</p></div></div>
+        {loading ? <div className="loading-inline"><LoaderCircle className="spin" size={17} /> Loading tools…</div> : tools.map((tool) => {
+          const props = (tool.input_schema?.properties || {}) as Record<string, { type?: string; enum?: string[]; description?: string }>;
+          const open = activeTool === tool.id;
+          return <div className="tool-row" key={tool.id}>
+            <span className={`tool-icon ${tool.write ? 'tool-write' : ''}`}><Wrench size={16} /></span>
+            <div className="tool-copy">
+              <strong>{tool.name}</strong>
+              <span>{tool.description}</span>
+              <small><code>{tool.id}</code> · {tool.permission} · {tool.write ? 'change' : 'read only'}</small>
+              {open && (
+                <div className="tool-runner">
+                  <div className="tool-runner-fields">
+                    {Object.keys(props).length === 0 && <span className="empty-state">No inputs required.</span>}
+                    {Object.entries(props).map(([key, schema]) => (
+                      <label key={key} htmlFor={`tool-${tool.id}-${key}`}>
+                        {key}{Array.isArray(tool.input_schema?.required) && (tool.input_schema.required as string[]).includes(key) ? ' *' : ''}
+                        {schema.enum ? (
+                          <select id={`tool-${tool.id}-${key}`} value={toolArgs[key] || ''} onChange={(event) => setToolArgs((current) => ({ ...current, [key]: event.target.value }))}>
+                            <option value="">Select…</option>
+                            {schema.enum.map((option) => <option key={option} value={option}>{option}</option>)}
+                          </select>
+                        ) : (
+                          <input id={`tool-${tool.id}-${key}`} value={toolArgs[key] || ''} onChange={(event) => setToolArgs((current) => ({ ...current, [key]: event.target.value }))} placeholder={schema.type || 'text'} />
+                        )}
+                      </label>
+                    ))}
+                  </div>
+                  <button className="primary-button" disabled={toolBusy} onClick={() => void runTool(tool)}>
+                    {toolBusy ? <LoaderCircle size={15} className="spin" /> : <Play size={15} />}
+                    {toolBusy ? 'Running…' : tool.write ? 'Confirm & run' : 'Run tool'}
+                  </button>
+                  {toolResult && activeTool === tool.id && <pre>{toolResult}</pre>}
+                </div>
+              )}
+            </div>
+            <div className="tool-actions">
+              <span className="readiness-chip ready"><i />Registered</span>
+              <button className="secondary-button" onClick={() => openTool(tool)}>{open ? 'Close' : 'Run'}</button>
+            </div>
+          </div>;
+        })}
+        <div className="safety-note"><ShieldCheck size={16} /><span>Write tools require confirmation. Path tools only work when computer control is enabled for authorized folders.</span></div>
       </section>
       <section className="panel tool-section"><div className="section-title"><Activity size={18} /><div><h3>Connections</h3><p>Verified provider status, not demo data.</p></div></div>
         {integrations.map((item) => <div className="integration-row" key={item.id}><span className={`integration-indicator ${item.configured ? 'connected' : ''}`} /><div><strong>{item.name}</strong><span>{item.detail}</span></div><em className={item.configured ? 'connected-text' : ''}>{statusLabel(item)}</em></div>)}

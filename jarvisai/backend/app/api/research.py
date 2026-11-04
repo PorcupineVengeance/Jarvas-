@@ -5,6 +5,7 @@ from app.api.dependencies import get_current_user
 from app.core.config import get_settings
 from app.models import User
 from app.services.llm import ProviderRequestFailed, ProviderUnavailable
+from app.services.web_research import search_web
 
 router = APIRouter(prefix="/api/research", tags=["research"])
 
@@ -13,7 +14,7 @@ class SearchRequest(BaseModel):
     query: str = Field(min_length=3, max_length=800)
 
 
-async def search_provider(query: str) -> dict:
+async def search_provider_manus(query: str) -> dict:
     settings = get_settings()
     if not settings.jarvis_research_api_id:
         raise ProviderUnavailable("No research API Hub identifier is configured.")
@@ -38,11 +39,18 @@ async def search_provider(query: str) -> dict:
             result = __import__("json").loads(result["jsonData"])
         except (ValueError, TypeError):
             raise ProviderRequestFailed("The research API returned an invalid JSON result.")
-    return {"api_id": settings.jarvis_research_api_id, "query": query, "result": result, "source_note": "Use only source names and URLs present in the result; this application did not access any other sites."}
+    return {"provider": "manus", "api_id": settings.jarvis_research_api_id, "query": query, "result": result, "source_note": "Use only source names and URLs present in the result."}
+
+
+async def search_provider(query: str) -> dict:
+    return await search_web(query)
 
 
 @router.post("/search")
 async def search(body: SearchRequest, _user: User = Depends(get_current_user)):
+    settings = get_settings()
+    if not settings.research_ready:
+        raise HTTPException(status_code=503, detail="Research is not configured. Set JARVIS_RESEARCH_PROVIDER=duckduckgo or provide Tavily/Manus credentials.")
     try:
         return await search_provider(body.query)
     except ProviderUnavailable as exc:

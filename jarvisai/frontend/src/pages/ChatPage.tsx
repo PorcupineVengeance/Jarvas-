@@ -32,6 +32,7 @@ export default function ChatPage() {
     }
   }, [location.state, conversationId]);
   useEffect(() => { scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }); }, [messages, busy]);
+  useEffect(() => () => { streamController.current?.abort(); }, []);
   const send = async (raw: string) => {
     const text = raw.trim();
     if (!text || busy) return;

@@ -3,7 +3,7 @@ export type Session = { authenticated: boolean; user?: User };
 export type Task = { id: string; title: string; description?: string | null; status: string; priority: string; due_at?: string | null; created_at: string; updated_at: string };
 export type MemoryItem = { id: string; category: string; content: string; created_at: string; updated_at: string };
 export type Integration = { id: string; name: string; configured: boolean; status: string; detail: string };
-export type AppStatus = { status: string; api_connection: boolean; time: string; cpu_percent: number; memory_percent: number; disk_percent: number; active_tasks: number; active_processes: Array<{ name: string; memory_mb: number }>; worker_count: number; connected_integrations: string[]; database: { connected: boolean }; providers: { llm: boolean; llm_name: string; transcription: boolean; text_to_speech: boolean }; microphone: { available: boolean | null; detail: string }; metrics_scope: string };
+export type AppStatus = { status: string; api_connection: boolean; time: string; cpu_percent: number; memory_percent: number; disk_percent: number; active_tasks: number; active_processes: Array<{ name: string; memory_mb: number }>; worker_count: number; connected_integrations: string[]; database: { connected: boolean }; providers: { llm: boolean; llm_name: string; transcription: boolean; text_to_speech: boolean; research?: boolean }; microphone: { available: boolean | null; detail: string }; metrics_scope: string };
 export type ChatMessage = { id: string; role: 'user' | 'assistant'; content: string };
 export type Tool = { id: string; name: string; description: string; permission: string; write: boolean; input_schema: Record<string, unknown> };
 export type FileRecord = { id: string; filename: string; content_type: string; size_bytes: number; created_at: string; asset_path: string };
@@ -25,9 +25,10 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
-  authConfig: () => request<{ available: boolean; provider: string; reason: string | null }>('/api/auth/config'),
+  authConfig: () => request<{ available: boolean; provider: string; local_available?: boolean; reason: string | null }>('/api/auth/config'),
   session: () => request<Session>('/api/auth/session'),
   login: () => { window.location.assign(`/api/auth/login?origin=${encodeURIComponent(window.location.origin)}`); },
+  localLogin: (displayName?: string) => request<{ ok: boolean; authenticated: boolean; user: User }>('/api/auth/local-login', { method: 'POST', body: JSON.stringify({ display_name: displayName || undefined }) }),
   logout: () => request<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
   status: () => request<AppStatus>('/api/system/status'),
   integrations: () => request<{ items: Integration[]; checked_at: string }>('/api/integrations'),

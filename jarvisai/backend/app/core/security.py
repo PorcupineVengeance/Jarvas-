@@ -56,13 +56,23 @@ def is_allowed_origin(origin: str) -> bool:
 
 def decode_session(token: str) -> dict:
     settings = get_settings()
-    if not settings.manus_jwt_secret or not settings.manus_project_id:
+    secret = settings.session_signing_secret
+    if not secret or not token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication is not configured.")
     try:
-        claims = jwt.decode(token, settings.manus_jwt_secret, algorithms=["HS256"], options={"require": ["exp"]})
+        claims = jwt.decode(token, secret, algorithms=["HS256"], options={"require": ["exp"]})
     except jwt.PyJWTError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Your session is invalid or expired.") from exc
-    if claims.get("appId") != settings.manus_project_id or not claims.get("openId"):
+    if not claims.get("openId"):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Your session is not valid for this application.")
+    auth_mode = claims.get("authMode", "manus")
+    if auth_mode == "manus":
+        if not settings.oauth_ready or claims.get("appId") != settings.manus_project_id:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Your session is not valid for this application.")
+    elif auth_mode == "local":
+        if not settings.local_auth_ready:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Local authentication is disabled.")
+    else:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Your session is not valid for this application.")
     return claims
 

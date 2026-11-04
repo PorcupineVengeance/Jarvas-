@@ -42,8 +42,10 @@ def system_status(db: Session = Depends(get_db), user: User = Depends(get_curren
         connected_integrations.append("Speech transcription")
     if settings.tts_ready:
         connected_integrations.append("Text to speech")
-    if settings.jarvis_research_api_id and settings.manus_service_ready:
-        connected_integrations.append("API Hub research")
+    if settings.research_ready:
+        connected_integrations.append(f"Research ({settings.jarvis_research_provider})")
+    if settings.jarvis_enable_computer_control:
+        connected_integrations.append("Computer control")
     return {
         "status": "online" if database_connected else "degraded",
         "api_connection": True,
@@ -56,7 +58,13 @@ def system_status(db: Session = Depends(get_db), user: User = Depends(get_curren
         "worker_count": worker_count,
         "connected_integrations": connected_integrations,
         "database": {"connected": database_connected},
-        "providers": {"llm": settings.llm_ready, "llm_name": settings.llm_provider_name, "transcription": settings.transcription_ready, "text_to_speech": settings.tts_ready},
+        "providers": {
+            "llm": settings.llm_ready,
+            "llm_name": settings.llm_provider_name,
+            "transcription": settings.transcription_ready,
+            "text_to_speech": settings.tts_ready,
+            "research": settings.research_ready,
+        },
         "microphone": {"available": None, "detail": "Microphone permissions are checked by the browser."},
         "metrics_scope": "Application host only; these measurements do not describe the user's personal computer.",
     }

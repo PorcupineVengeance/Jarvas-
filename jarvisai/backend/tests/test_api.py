@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,11 @@ from app.database.base import Base
 from app.database.session import get_db
 from app.main import app
 from app.models import StoredFile, Task, User
+
+
+def delete_json(http: TestClient, path: str, payload: dict, headers: dict | None = None):
+    merged = {"Content-Type": "application/json", **(headers or {})}
+    return http.request("DELETE", path, content=json.dumps(payload), headers=merged)
 
 
 @pytest.fixture
@@ -76,8 +82,8 @@ def test_task_crud_is_scoped_and_requires_delete_confirmation(client):
     assert [item["id"] for item in listed.json()] == [task["id"]]
     updated = http.patch(f"/api/tasks/{task['id']}", headers=ALLOWED_ORIGIN, json={"status": "in_progress"})
     assert updated.status_code == 200 and updated.json()["status"] == "in_progress"
-    assert http.delete(f"/api/tasks/{task['id']}", headers=ALLOWED_ORIGIN, json={"confirmed": False}).status_code == 409
-    assert http.delete(f"/api/tasks/{task['id']}", headers=ALLOWED_ORIGIN, json={"confirmed": True}).status_code == 200
+    assert delete_json(http, f"/api/tasks/{task['id']}", {"confirmed": False}, ALLOWED_ORIGIN).status_code == 409
+    assert delete_json(http, f"/api/tasks/{task['id']}", {"confirmed": True}, ALLOWED_ORIGIN).status_code == 200
     with factory() as db:
         db.add(Task(id="other-user-task", owner_id="another-user", title="Private", status="open", priority="normal"))
         db.commit()
@@ -101,8 +107,8 @@ def test_file_record_removal_requires_confirmation_and_is_soft_delete(client):
     with factory() as db:
         db.add(StoredFile(id="file-1", owner_id="test-user", filename="notes.txt", object_key="jarvis/test/notes.txt", content_type="text/plain", size_bytes=5, extracted_text="hello"))
         db.commit()
-    assert http.delete("/api/files/file-1", headers=ALLOWED_ORIGIN, json={"confirmed": False}).status_code == 409
-    removed = http.delete("/api/files/file-1", headers=ALLOWED_ORIGIN, json={"confirmed": True})
+    assert delete_json(http, "/api/files/file-1", {"confirmed": False}, ALLOWED_ORIGIN).status_code == 409
+    removed = delete_json(http, "/api/files/file-1", {"confirmed": True}, ALLOWED_ORIGIN)
     assert removed.status_code == 200
     assert removed.json()["deletion"] == "metadata_hidden"
     assert http.get("/api/files/file-1").status_code == 404

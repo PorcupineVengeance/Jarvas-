@@ -16,4 +16,5 @@ backend/app/static/
 *.sqlite3
 data/
 logs/
+storage/
 .DS_Store

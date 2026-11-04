@@ -1,4 +1,5 @@
 from collections import defaultdict, deque
+from contextlib import asynccontextmanager
 from pathlib import Path
 from time import monotonic
 import logging
@@ -11,19 +12,67 @@ from app.api.files import router as files_router
 from app.api.integrations import router as integrations_router
 from app.api.memory import router as memory_router
 from app.api.realtime import router as realtime_router
+from app.api.reminders import router as reminders_router
 from app.api.research import router as research_router
 from app.api.system import router as system_router
 from app.api.tasks import router as tasks_router
 from app.api.voice import router as voice_router
+from app.core.config import get_settings
 from app.core.security import request_origin_is_trusted
+from app.database.base import Base
+from app.database.session import get_engine
+from app.services.file_manager import ensure_app_storage
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("jarvis")
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 FRONTEND_DIR = PROJECT_ROOT / "frontend" / "dist"
 
-app = FastAPI(title="JARVIS API", version="1.0.0", description="A modular, permission-aware personal AI assistant API.", docs_url="/docs", redoc_url=None)
-for router in (auth_router, chat_router, tasks_router, memory_router, system_router, voice_router, research_router, files_router, integrations_router, automation_router, realtime_router):
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    settings = get_settings()
+    ensure_app_storage()
+    Path("data").mkdir(exist_ok=True)
+    Path("logs").mkdir(exist_ok=True)
+    Base.metadata.create_all(bind=get_engine())
+    logger.info(
+        "JARVIS ready | llm=%s research=%s stt=%s tts=%s local_auth=%s computer=%s",
+        settings.llm_ready,
+        settings.research_ready,
+        settings.transcription_ready,
+        settings.tts_ready,
+        settings.local_auth_ready,
+        settings.jarvis_enable_computer_control,
+    )
+    yield
+    from app.services.http_client import close_http_client
+    await close_http_client()
+
+
+app = FastAPI(
+    title="JARVIS API",
+    version="1.1.0",
+    description="A modular, permission-aware personal AI assistant API.",
+    docs_url="/docs",
+    redoc_url=None,
+    lifespan=lifespan,
+)
+
+for router in (
+    auth_router,
+    chat_router,
+    tasks_router,
+    memory_router,
+    reminders_router,
+    system_router,
+    voice_router,
+    research_router,
+    files_router,
+    integrations_router,
+    automation_router,
+    realtime_router,
+):
     app.include_router(router)
 
 _rate_windows: dict[str, deque[float]] = defaultdict(deque)
@@ -61,7 +110,7 @@ def route_manifest():
 def _serve_frontend(path: str):
     index = FRONTEND_DIR / "index.html"
     if not index.is_file():
-        return JSONResponse(status_code=503, content={"detail": "JARVIS frontend has not been built yet."})
+        return JSONResponse(status_code=503, content={"detail": "JARVIS frontend has not been built yet. Run: cd frontend && pnpm install && pnpm build"})
     if path:
         candidate = (FRONTEND_DIR / path).resolve()
         if FRONTEND_DIR.resolve() in candidate.parents and candidate.is_file():
