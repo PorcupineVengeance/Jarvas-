@@ -1,0 +1,8 @@
+[project]
+name = "jarvisai"
+version = "1.1.0"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.vercel]
+entrypoint = "asgi:app"
