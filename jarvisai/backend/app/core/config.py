@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     manus_oauth_portal_url: str | None = None
     manus_oauth_api_url: str | None = None
     database_url: str | None = Field(default=None, repr=False)
+    # Vercel ↔ Supabase integration exports these automatically.
+    postgres_url: str | None = Field(default=None, repr=False)
+    postgres_prisma_url: str | None = Field(default=None, repr=False)
+    postgres_url_non_pooling: str | None = Field(default=None, repr=False)
     jarvis_session_ttl_seconds: int = 28_800
     jarvis_max_upload_mb: int = 15
     jarvis_llm_api_url: str | None = None
@@ -131,12 +135,21 @@ class Settings(BaseSettings):
     @property
     def resolved_database_url(self) -> str:
         on_serverless = bool(os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME"))
-        url = (self.database_url or "").strip()
-        # Vercel/serverless filesystems are read-only except /tmp — never use ./data there.
-        if on_serverless and (not url or url.startswith("sqlite:")):
+        # Prefer explicit DATABASE_URL, then Vercel Supabase exports.
+        # Non-pooling is best for SQLAlchemy DDL/create_all on serverless.
+        url = (
+            (self.database_url or "").strip()
+            or (self.postgres_url_non_pooling or "").strip()
+            or (self.postgres_url or "").strip()
+            or (self.postgres_prisma_url or "").strip()
+        )
+        if url.startswith("sqlite:") and on_serverless:
+            # Relative sqlite paths are not writable on Vercel.
             return "sqlite:////tmp/jarvis.db"
         if url:
             return url
+        if on_serverless:
+            return "sqlite:////tmp/jarvis.db"
         return "sqlite:///./data/jarvis.db"
 
     @property

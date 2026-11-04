@@ -29,6 +29,9 @@ def build_engine(url: str | None = None) -> Engine:
                 path = Path.cwd() / path
             path.parent.mkdir(parents=True, exist_ok=True)
         engine_options["connect_args"] = {"check_same_thread": False, "timeout": 15}
+    elif "postgresql" in database_url or "postgres" in database_url:
+        # Small pool for Vercel serverless / Supabase.
+        engine_options.update({"pool_size": 1, "max_overflow": 3, "pool_recycle": 280})
     return create_engine(database_url, **engine_options)
 
 
