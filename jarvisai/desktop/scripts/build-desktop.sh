@@ -48,21 +48,22 @@ echo "==> Installing Electron deps"
   npm install
 )
 
+# Always skip auto-publish here; the Release workflow uploads artifacts explicitly.
 case "$TARGET" in
   mac|macos)
-    (cd desktop && npm run dist:mac)
+    (cd desktop && npx electron-builder --mac --publish never)
     ;;
   win|windows)
-    (cd desktop && npm run dist:win)
+    (cd desktop && npx electron-builder --win --publish never)
     ;;
   both)
-    (cd desktop && npm run dist)
+    (cd desktop && npx electron-builder --mac --win --publish never)
     ;;
   current|*)
     if [[ "$(uname -s)" == "Darwin" ]]; then
-      (cd desktop && npm run dist:mac)
+      (cd desktop && npx electron-builder --mac --publish never)
     else
-      (cd desktop && npm run dist:win)
+      (cd desktop && npx electron-builder --win --publish never)
     fi
     ;;
 esac

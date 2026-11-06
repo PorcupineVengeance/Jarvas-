@@ -19,6 +19,7 @@
     "productName": "JARVIS",
     "copyright": "Copyright © JARVIS",
     "icon": "resources/icon.png",
+    "publish": null,
     "directories": {
       "output": "release",
       "buildResources": "resources"
