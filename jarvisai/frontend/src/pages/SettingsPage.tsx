@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { AudioLines, Check, LockKeyhole, ShieldCheck, SlidersHorizontal } from 'lucide-react';
-import { api, type Integration, type User } from '../lib/api';
-import { DEFAULT_FISH_VOICE, getPreferredVoice, setPreferredVoice } from '../lib/voiceConversation';
+import { Apple, AudioLines, Check, Download, FolderOpen, Globe2, LockKeyhole, Monitor, ShieldCheck, SlidersHorizontal } from 'lucide-react';
+import { api, type DesktopInfo, type Integration, type User } from '../lib/api';
+import { isJarvisDesktop, pickDesktopFolders, revealDesktopDataDir } from '../lib/desktop';
+import { DEFAULT_FISH_VOICE, getPreferredVoice, isWakeWordEnabled, setPreferredVoice, setWakeWordEnabled } from '../lib/voiceConversation';
 
 const modes = [
   ['auto', 'Auto', 'Choose a helpful mode based on the request'],
@@ -14,18 +15,100 @@ const modes = [
   ['focus', 'Focus', 'Concise answers with minimal interruptions'],
 ];
 
+const DEFAULT_FOLDERS = ['~/Desktop', '~/Documents', '~/Downloads'];
+
+function DesktopDownloadCard({ info }: { info: DesktopInfo | null }) {
+  if (isJarvisDesktop() || info?.is_desktop) {
+    return (
+      <section className="panel settings-section">
+        <div className="section-title">
+          <Monitor size={18} />
+          <div>
+            <h3>Desktop connected</h3>
+            <p>You are running JARVIS Desktop. Computer control is managed below.</p>
+          </div>
+          <span className="readiness-chip ready"><i />Local</span>
+        </div>
+        <p className="setting-help">{info?.notice || 'This install can help with apps and files you authorize.'}</p>
+      </section>
+    );
+  }
+
+  const mac = info?.downloads.mac;
+  const win = info?.downloads.windows;
+  const configured = Boolean(info?.downloads.configured && (mac || win));
+
+  return (
+    <section className="panel settings-section">
+      <div className="section-title">
+        <Download size={18} />
+        <div>
+          <h3>Get Desktop</h3>
+          <p>Install JARVIS on your laptop so it can open apps, folders, and help with everyday tasks — only where you allow.</p>
+        </div>
+      </div>
+      <div className="desktop-download-row">
+        {mac ? (
+          <a className="primary-button desktop-download-link" href={mac}><Apple size={15} /> Download for macOS</a>
+        ) : (
+          <button type="button" className="secondary-button" disabled title="Publish a release and set JARVIS_DESKTOP_DOWNLOAD_BASE"><Apple size={15} /> macOS build</button>
+        )}
+        {win ? (
+          <a className="primary-button desktop-download-link" href={win}><Monitor size={15} /> Download for Windows</a>
+        ) : (
+          <button type="button" className="secondary-button" disabled title="Publish a release and set JARVIS_DESKTOP_DOWNLOAD_BASE"><Monitor size={15} /> Windows build</button>
+        )}
+      </div>
+      <p className="setting-help">
+        {configured
+          ? 'Installers come from your configured release URL. Prefer the official download for your OS.'
+          : 'Set JARVIS_DESKTOP_DOWNLOAD_BASE to your GitHub Releases (or CDN) URL that hosts JARVIS-mac.dmg and JARVIS-win.exe. Until then, build locally with desktop/scripts/build-desktop.sh.'}
+      </p>
+    </section>
+  );
+}
+
 export default function SettingsPage({ user }: { user: User }) {
   const [mode, setMode] = useState(localStorage.getItem('jarvis.mode') || 'auto');
   const [voiceId, setVoiceId] = useState(getPreferredVoice());
   const [savedVoice, setSavedVoice] = useState(false);
   const [integrations, setIntegrations] = useState<Integration[]>([]);
+  const [desktopInfo, setDesktopInfo] = useState<DesktopInfo | null>(null);
+  const [computerControl, setComputerControl] = useState(true);
+  const [liveWeb, setLiveWeb] = useState(true);
+  const [bluetooth, setBluetooth] = useState(false);
+  const [allowedPaths, setAllowedPaths] = useState<string[]>(DEFAULT_FOLDERS);
+  const [pathDraft, setPathDraft] = useState('');
+  const [desktopBusy, setDesktopBusy] = useState(false);
+  const [desktopMessage, setDesktopMessage] = useState('');
+  const [desktopError, setDesktopError] = useState('');
+  const [wakeWord, setWakeWord] = useState(() => isWakeWordEnabled());
   const navigate = useNavigate();
-  useEffect(() => { void api.integrations().then((result) => setIntegrations(result.items)).catch(() => undefined); }, []);
+
+  useEffect(() => {
+    void api.integrations().then((result) => setIntegrations(result.items)).catch(() => undefined);
+    void api.desktopInfo().then((info) => {
+      setDesktopInfo(info);
+      if (info.is_desktop) {
+        const prefs = info.preferences;
+        setComputerControl(prefs?.computer_control ?? info.computer_control);
+        setLiveWeb(prefs?.live_web ?? info.live_web ?? true);
+        setBluetooth(prefs?.bluetooth ?? info.bluetooth ?? false);
+        setAllowedPaths(prefs?.allowed_paths?.length ? prefs.allowed_paths : info.allowed_paths.length ? info.allowed_paths : DEFAULT_FOLDERS);
+      } else {
+        setLiveWeb(info.live_web ?? true);
+      }
+    }).catch(() => undefined);
+  }, []);
+
   const tts = integrations.find((item) => item.id === 'text_to_speech');
   const wake = integrations.find((item) => item.id === 'wake_word');
   const llm = integrations.find((item) => item.id === 'llm');
+  const weather = integrations.find((item) => item.id === 'weather');
   const stt = integrations.find((item) => item.id === 'speech_to_text');
   const research = integrations.find((item) => item.id === 'research');
+  const computer = integrations.find((item) => item.id === 'computer_control');
+  const showDesktopPermissions = isJarvisDesktop() || Boolean(desktopInfo?.is_desktop);
 
   const saveVoice = () => {
     setPreferredVoice(voiceId.trim() || DEFAULT_FISH_VOICE);
@@ -34,8 +117,135 @@ export default function SettingsPage({ user }: { user: User }) {
     window.setTimeout(() => setSavedVoice(false), 1800);
   };
 
+  const saveDesktopPermissions = async () => {
+    setDesktopBusy(true);
+    setDesktopError('');
+    setDesktopMessage('');
+    try {
+      const result = await api.updateDesktopSettings({ computer_control: computerControl, live_web: liveWeb, bluetooth, allowed_paths: allowedPaths });
+      setDesktopMessage(result.message || 'Permissions saved.');
+      setComputerControl(result.computer_control);
+      setLiveWeb(result.live_web ?? liveWeb);
+      setBluetooth(result.bluetooth ?? bluetooth);
+      setAllowedPaths(result.allowed_paths);
+      const info = await api.desktopInfo();
+      setDesktopInfo(info);
+    } catch (e) {
+      setDesktopError(e instanceof Error ? e.message : 'Could not save desktop permissions.');
+    } finally {
+      setDesktopBusy(false);
+    }
+  };
+
+  const addPath = () => {
+    const next = pathDraft.trim();
+    if (!next || allowedPaths.includes(next)) return;
+    setAllowedPaths((current) => [...current, next]);
+    setPathDraft('');
+  };
+
+  const pickFolders = async () => {
+    const picked = await pickDesktopFolders();
+    if (!picked.length) return;
+    setAllowedPaths((current) => {
+      const merged = [...current];
+      for (const path of picked) {
+        if (!merged.includes(path)) merged.push(path);
+      }
+      return merged;
+    });
+  };
+
   return <div className="page-stack settings-page">
     <div className="section-heading"><div><span className="eyebrow">PREFERENCES</span><h2>Settings</h2><p>Control how JARVIS responds and when it can use your devices.</p></div></div>
+
+    <DesktopDownloadCard info={desktopInfo} />
+
+    {showDesktopPermissions && (
+      <section className="panel settings-section">
+        <div className="section-title">
+          <FolderOpen size={18} />
+          <div>
+            <h3>Desktop permissions</h3>
+            <p>JARVIS only acts in folders you authorize. Destructive tools still ask for confirmation.</p>
+          </div>
+          <span className={`readiness-chip ${computerControl ? 'ready' : 'unready'}`}><i />{computerControl ? 'Enabled' : 'Off'}</span>
+        </div>
+        <div className="setting-row">
+          <div><strong>Computer control</strong><span>{computer?.detail || 'Open apps, URLs, authorized folders, and screenshots.'}</span></div>
+          <button
+            type="button"
+            className="toggle-button"
+            aria-pressed={computerControl}
+            onClick={() => setComputerControl((value) => !value)}
+          >
+            {computerControl ? 'On' : 'Off'}
+          </button>
+        </div>
+        <div className="setting-row">
+          <div>
+            <strong>Live web & weather</strong>
+            <span>
+              {liveWeb
+                ? 'JARVIS may search the web, read public pages, and fetch live weather (Open-Meteo) to answer you.'
+                : 'Off. JARVIS will not call live web or weather tools until you allow it.'}
+            </span>
+          </div>
+          <button
+            type="button"
+            className="toggle-button"
+            aria-pressed={liveWeb}
+            onClick={() => setLiveWeb((value) => !value)}
+          >
+            {liveWeb ? 'On' : 'Off'}
+          </button>
+        </div>
+        <div className="setting-row">
+          <div>
+            <strong>Bluetooth accessories</strong>
+            <span>
+              {bluetooth
+                ? 'JARVIS may list, connect, and disconnect paired Bluetooth devices on this computer.'
+                : 'Off. Turn on to let JARVIS manage paired headphones, speakers, keyboards, and similar devices.'}
+              {' '}On macOS, connect/disconnect also needs <code>brew install blueutil</code>.
+            </span>
+          </div>
+          <button
+            type="button"
+            className="toggle-button"
+            aria-pressed={bluetooth}
+            onClick={() => setBluetooth((value) => !value)}
+          >
+            {bluetooth ? 'On' : 'Off'}
+          </button>
+        </div>
+        <label className="field-label" htmlFor="allowed-path">Allowed folders</label>
+        <ul className="allowed-path-list">
+          {allowedPaths.map((path) => (
+            <li key={path}>
+              <code>{path}</code>
+              <button type="button" className="subtle-link" onClick={() => setAllowedPaths((current) => current.filter((item) => item !== path))} aria-label={`Remove ${path}`}>Remove</button>
+            </li>
+          ))}
+        </ul>
+        <div className="settings-inline-row">
+          <input id="allowed-path" className="settings-select" value={pathDraft} onChange={(event) => setPathDraft(event.target.value)} placeholder="~/Projects or absolute path" maxLength={500} />
+          <button type="button" className="secondary-button" onClick={addPath} disabled={!pathDraft.trim()}>Add</button>
+          {isJarvisDesktop() && <button type="button" className="secondary-button" onClick={() => void pickFolders()}><FolderOpen size={15} /> Browse</button>}
+        </div>
+        <div className="settings-actions">
+          <button type="button" className="primary-button" disabled={desktopBusy} onClick={() => void saveDesktopPermissions()}>
+            {desktopBusy ? 'Saving…' : 'Save permissions'}
+          </button>
+          {isJarvisDesktop() && (
+            <button type="button" className="secondary-button" onClick={() => void revealDesktopDataDir()}>Open data folder</button>
+          )}
+        </div>
+        {desktopMessage && <p className="setting-help success-text">{desktopMessage}</p>}
+        {desktopError && <p className="error-text">{desktopError}</p>}
+        <div className="safety-note"><ShieldCheck size={15} /><span>Hosted web JARVIS never controls your laptop. Only this desktop app can, and only inside the folders listed here.</span></div>
+      </section>
+    )}
 
     <section className="panel settings-section">
       <div className="section-title"><SlidersHorizontal size={18} /><div><h3>Assistant mode</h3><p>Choose a default interaction style. You can also switch modes from Chat.</p></div></div>
@@ -49,8 +259,28 @@ export default function SettingsPage({ user }: { user: User }) {
     <section className="panel settings-section">
       <div className="section-title"><AudioLines size={18} /><div><h3>Voice & privacy</h3><p>Microphone access is requested only when you start a call or recording.</p></div></div>
       <div className="setting-row">
-        <div><strong>Continuous listening</strong><span>{wake?.configured ? 'Wake-word provider is connected. Continuous listening remains off by default.' : 'Off — wake-word stays disabled unless enabled in the backend.'}</span></div>
-        <button type="button" className="toggle-button" aria-label="Continuous listening off" aria-pressed={false} disabled title="Continuous listening stays off for privacy">Off</button>
+        <div>
+          <strong>Hey / Yo JARVIS wake words</strong>
+          <span>
+            {wakeWord
+              ? 'Listening for “Hey JARVIS” or “Yo JARVIS”. Say a request after the wake word and JARVIS answers immediately.'
+              : 'Off for privacy. Turn on to wake JARVIS with “Hey JARVIS” or “Yo JARVIS”.'}
+            {wake?.configured ? ' Server flag is also enabled.' : ''}
+          </span>
+        </div>
+        <button
+          type="button"
+          className="toggle-button"
+          aria-label={wakeWord ? 'Wake words on' : 'Wake words off'}
+          aria-pressed={wakeWord}
+          onClick={() => {
+            const next = !wakeWord;
+            setWakeWord(next);
+            setWakeWordEnabled(next);
+          }}
+        >
+          {wakeWord ? 'On' : 'Off'}
+        </button>
       </div>
       <div className="setting-row">
         <div><strong>Speech transcription</strong><span>{stt?.detail || 'Checking provider status…'}</span></div>
@@ -68,6 +298,22 @@ export default function SettingsPage({ user }: { user: User }) {
       <p className="setting-help">Used for home and voice-page talk-back. Default: <code>{DEFAULT_FISH_VOICE}</code></p>
       <div className="safety-note"><ShieldCheck size={15} /><span>Voice calls do not show transcripts on screen. Utility recordings are sent only after you stop.</span></div>
     </section>
+
+    {!showDesktopPermissions && (
+      <section className="panel settings-section">
+        <div className="section-title">
+          <Globe2 size={18} />
+          <div>
+            <h3>Live web & weather</h3>
+            <p>Server-side live lookup. On Desktop, manage this under Desktop permissions.</p>
+          </div>
+          <span className={`readiness-chip ${research?.configured ? 'ready' : 'unready'}`}><i />{research?.configured ? 'Allowed' : 'Off / unavailable'}</span>
+        </div>
+        <p className="setting-help">
+          {research?.detail || 'Checking…'} {weather?.detail ? `Weather: ${weather.detail}` : ''}
+        </p>
+      </section>
+    )}
 
     <section className="panel settings-section">
       <div className="section-title"><SlidersHorizontal size={18} /><div><h3>AI provider</h3><p>Provider selection is configured server-side, never in the browser bundle.</p></div>

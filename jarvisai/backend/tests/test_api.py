@@ -120,7 +120,20 @@ def test_file_extraction_and_automatic_modes_are_bounded_and_real():
     assert resolve_mode("Find the latest release notes and cite sources", "auto") == "research"
     assert resolve_mode("Explain this Python stack trace", "auto") == "developer"
     assert resolve_mode("Summarize my open tasks", "auto") == "assistant"
+    assert resolve_mode("Open Chrome and take a screenshot", "auto") == "automation"
     assert resolve_mode("Make this answer concise", "focus") == "focus"
+
+
+def test_desktop_info_reports_web_runtime_without_claiming_control(client):
+    http, _ = client
+    info = http.get("/api/desktop/info")
+    assert info.status_code == 200
+    body = info.json()
+    assert body["is_desktop"] is False
+    assert body["computer_control"] is False
+    assert "downloads" in body
+    blocked = http.put("/api/desktop/settings", headers=ALLOWED_ORIGIN, json={"computer_control": True, "allowed_paths": ["~/Desktop"]})
+    assert blocked.status_code == 400
 
 
 def test_no_database_write_is_needed_for_health():

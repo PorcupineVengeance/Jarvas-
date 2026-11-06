@@ -1,0 +1,105 @@
+name: Release Desktop
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v1.1.0)"
+        required: true
+        default: "v1.1.0"
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: mac
+            artifact: JARVIS-mac.dmg
+          - os: windows-latest
+            target: win
+            artifact: JARVIS-win.exe
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: jarvisai
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Enable Corepack / pnpm
+        run: corepack enable && corepack prepare pnpm@11.25.0 --activate
+
+      - name: Python venv + deps
+        shell: bash
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install -U pip
+          .venv/bin/python -m pip install -r requirements.txt 'pyinstaller>=6.3'
+
+      - name: Build frontend + sidecar + installer
+        shell: bash
+        run: bash desktop/scripts/build-desktop.sh ${{ matrix.target }}
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: jarvisai/desktop/release/${{ matrix.artifact }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download macOS installer
+        uses: actions/download-artifact@v4
+        with:
+          name: JARVIS-mac.dmg
+          path: dist
+
+      - name: Download Windows installer
+        uses: actions/download-artifact@v4
+        with:
+          name: JARVIS-win.exe
+          path: dist
+
+      - name: Resolve tag
+        id: meta
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: JARVIS Desktop ${{ steps.meta.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            dist/JARVIS-mac.dmg
+            dist/JARVIS-win.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

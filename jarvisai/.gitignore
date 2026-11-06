@@ -18,3 +18,9 @@ data/
 logs/
 storage/
 .DS_Store
+desktop/node_modules/
+desktop/release/
+desktop/build/
+desktop/resources/sidecar/
+desktop/resources/frontend/
+desktop/dist/

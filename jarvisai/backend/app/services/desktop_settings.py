@@ -1,0 +1,97 @@
+"""Persist desktop permission preferences for the local sidecar."""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+from typing import Any
+
+from app.core.config import clear_settings_cache, get_settings
+
+
+DEFAULT_ALLOWED = ["~/Desktop", "~/Documents", "~/Downloads"]
+
+
+def settings_file() -> Path:
+    settings = get_settings()
+    if settings.jarvis_desktop_settings_path:
+        return Path(settings.jarvis_desktop_settings_path).expanduser()
+    env_path = os.getenv("JARVIS_DESKTOP_SETTINGS_PATH")
+    if env_path:
+        return Path(env_path).expanduser()
+    return settings.storage_path.parent / "desktop-settings.json"
+
+
+def load_desktop_settings() -> dict[str, Any]:
+    path = settings_file()
+    settings = get_settings()
+    defaults = {
+        "computer_control": bool(settings.jarvis_enable_computer_control),
+        "live_web": bool(settings.jarvis_enable_live_web),
+        "bluetooth": bool(settings.jarvis_enable_bluetooth),
+        "allowed_paths": [str(p) for p in settings.jarvis_allowed_paths.split(",") if p.strip()] or list(DEFAULT_ALLOWED),
+    }
+    if path.is_file():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return {
+                    "computer_control": bool(data.get("computer_control", defaults["computer_control"])),
+                    "live_web": bool(data.get("live_web", defaults["live_web"])),
+                    "bluetooth": bool(data.get("bluetooth", defaults["bluetooth"])),
+                    "allowed_paths": list(data.get("allowed_paths") or defaults["allowed_paths"]),
+                }
+        except (OSError, json.JSONDecodeError, TypeError):
+            pass
+    return defaults
+
+
+def save_desktop_settings(
+    *,
+    computer_control: bool,
+    allowed_paths: list[str],
+    live_web: bool = True,
+    bluetooth: bool = False,
+) -> dict[str, Any]:
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for item in allowed_paths:
+        raw = str(item).strip()
+        if not raw or raw in seen:
+            continue
+        seen.add(raw)
+        cleaned.append(raw)
+    if not cleaned:
+        cleaned = list(DEFAULT_ALLOWED)
+    payload = {
+        "computer_control": bool(computer_control),
+        "live_web": bool(live_web),
+        "bluetooth": bool(bluetooth),
+        "allowed_paths": cleaned,
+    }
+    path = settings_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+    # Apply immediately for the running process.
+    os.environ["JARVIS_ENABLE_COMPUTER_CONTROL"] = "true" if computer_control else "false"
+    os.environ["JARVIS_ENABLE_LIVE_WEB"] = "true" if live_web else "false"
+    os.environ["JARVIS_ENABLE_BLUETOOTH"] = "true" if bluetooth else "false"
+    os.environ["JARVIS_ALLOWED_PATHS"] = ",".join(cleaned)
+    clear_settings_cache()
+    return payload
+
+
+def apply_desktop_settings_on_boot() -> None:
+    """Overlay JSON preferences onto process env before first settings read."""
+    if os.getenv("JARVIS_DESKTOP") != "1":
+        return
+    clear_settings_cache()
+    data = load_desktop_settings()
+    os.environ["JARVIS_ENABLE_COMPUTER_CONTROL"] = "true" if data.get("computer_control", True) else "false"
+    os.environ["JARVIS_ENABLE_LIVE_WEB"] = "true" if data.get("live_web", True) else "false"
+    os.environ["JARVIS_ENABLE_BLUETOOTH"] = "true" if data.get("bluetooth", False) else "false"
+    paths = data.get("allowed_paths") or DEFAULT_ALLOWED
+    os.environ["JARVIS_ALLOWED_PATHS"] = ",".join(str(p) for p in paths)
+    clear_settings_cache()

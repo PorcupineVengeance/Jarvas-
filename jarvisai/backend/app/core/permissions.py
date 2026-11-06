@@ -17,6 +17,16 @@ def computer_control_enabled() -> bool:
     return bool(get_settings().jarvis_enable_computer_control)
 
 
+def live_web_enabled() -> bool:
+    """User-permissioned live web research, page fetch, and weather."""
+    return bool(get_settings().jarvis_enable_live_web)
+
+
+def bluetooth_control_enabled() -> bool:
+    """User-permissioned Bluetooth accessory control (Desktop)."""
+    return bool(get_settings().jarvis_enable_bluetooth)
+
+
 def path_is_allowed(target: str | Path) -> bool:
     try:
         resolved = Path(target).expanduser().resolve()

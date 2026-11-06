@@ -51,11 +51,23 @@ class Settings(BaseSettings):
     jarvis_local_auth_enabled: bool = True
     jarvis_local_auth_secret: str | None = Field(default=None, repr=False)
     jarvis_local_auth_display_name: str = "Operator"
+    # Supabase Auth (email/password signup + login). Postgres may already use POSTGRES_URL.
+    supabase_url: str | None = None
+    supabase_anon_key: str | None = Field(default=None, repr=False)
+    supabase_service_role_key: str | None = Field(default=None, repr=False)
     jarvis_storage_dir: str = "./storage"
     jarvis_enable_computer_control: bool = False
+    # Live web search, page fetch, and weather (Open-Meteo). User can disable in Settings.
+    jarvis_enable_live_web: bool = True
+    # Bluetooth list/connect/disconnect for paired accessories (Desktop only).
+    jarvis_enable_bluetooth: bool = False
     jarvis_allowed_paths: str = "~/Desktop,~/Documents,~/Downloads"
     jarvis_wake_word_enabled: bool = False
     jarvis_continuous_listening: bool = False
+    jarvis_desktop: bool = False
+    jarvis_desktop_download_base: str = ""
+    jarvis_desktop_settings_path: str | None = None
+    jarvis_frontend_dir: str | None = None
 
     @property
     def api_base(self) -> str | None:
@@ -114,17 +126,31 @@ class Settings(BaseSettings):
         return bool(self.jarvis_local_auth_enabled and self.session_local_secret)
 
     @property
+    def supabase_auth_ready(self) -> bool:
+        return bool((self.supabase_url or "").strip() and (self.supabase_anon_key or "").strip())
+
+    @property
+    def effective_open_access(self) -> bool:
+        """Desktop may stay open-access; public web with Supabase requires signup/login."""
+        if self.supabase_auth_ready and not self.is_desktop:
+            return False
+        return bool(self.jarvis_open_access)
+
+    @property
     def session_local_secret(self) -> str | None:
         if self.jarvis_local_auth_secret and len(self.jarvis_local_auth_secret) >= 16:
             return self.jarvis_local_auth_secret
         # Open-access deploys (e.g. Vercel) can run without a configured secret.
         if self.jarvis_open_access:
             return "jarvis-open-access-fallback-secret"
+        # Cookie signing when only Supabase Auth is configured.
+        if self.supabase_auth_ready and self.supabase_anon_key and len(self.supabase_anon_key) >= 16:
+            return self.supabase_anon_key[:80]
         return None
 
     @property
     def auth_ready(self) -> bool:
-        return self.oauth_ready or self.local_auth_ready or self.jarvis_open_access
+        return self.oauth_ready or self.local_auth_ready or self.jarvis_open_access or self.supabase_auth_ready
 
     @property
     def session_signing_secret(self) -> str | None:
@@ -205,6 +231,29 @@ class Settings(BaseSettings):
                 continue
             paths.append(Path(raw).expanduser().resolve())
         return paths
+
+    @property
+    def is_desktop(self) -> bool:
+        return bool(self.jarvis_desktop or os.getenv("JARVIS_DESKTOP") == "1")
+
+    @property
+    def desktop_download_urls(self) -> dict[str, str]:
+        base = (self.jarvis_desktop_download_base or "").rstrip("/")
+        if not base:
+            return {"mac": "", "windows": "", "configured": False}
+        return {
+            "mac": f"{base}/JARVIS-mac.dmg",
+            "windows": f"{base}/JARVIS-win.exe",
+            "configured": True,
+            "base": base,
+        }
+
+    @property
+    def frontend_dist(self) -> Path:
+        if self.jarvis_frontend_dir:
+            return Path(self.jarvis_frontend_dir).expanduser().resolve()
+        # backend/app/core/config.py -> jarvisai/
+        return Path(__file__).resolve().parents[3] / "frontend" / "dist"
 
 
 @lru_cache(maxsize=1)

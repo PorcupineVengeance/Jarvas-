@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from app.api.auth import router as auth_router
 from app.api.automation import router as automation_router
 from app.api.chat import router as chat_router
+from app.api.desktop import router as desktop_router
 from app.api.files import router as files_router
 from app.api.integrations import router as integrations_router
 from app.api.memory import router as memory_router
@@ -21,16 +22,24 @@ from app.core.config import get_settings
 from app.core.security import request_origin_is_trusted
 from app.database.base import Base
 from app.database.session import get_engine
+from app.services.desktop_settings import apply_desktop_settings_on_boot
 from app.services.file_manager import ensure_app_storage
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("jarvis")
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-FRONTEND_DIR = PROJECT_ROOT / "frontend" / "dist"
+
+
+def _frontend_dir() -> Path:
+    return get_settings().frontend_dist
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    try:
+        apply_desktop_settings_on_boot()
+    except Exception:
+        logger.exception("Desktop settings overlay failed; continuing with env defaults.")
     settings = get_settings()
     on_vercel = bool(__import__("os").getenv("VERCEL"))
     if not on_vercel:
@@ -48,7 +57,7 @@ async def lifespan(_app: FastAPI):
     except Exception:
         logger.exception("Database init failed; API may be degraded.")
     logger.info(
-        "JARVIS ready | llm=%s research=%s stt=%s tts=%s local_auth=%s open_access=%s computer=%s vercel=%s",
+        "JARVIS ready | llm=%s research=%s stt=%s tts=%s local_auth=%s open_access=%s computer=%s desktop=%s vercel=%s",
         settings.llm_ready,
         settings.research_ready,
         settings.transcription_ready,
@@ -56,6 +65,7 @@ async def lifespan(_app: FastAPI):
         settings.local_auth_ready,
         settings.jarvis_open_access,
         settings.jarvis_enable_computer_control,
+        settings.is_desktop,
         on_vercel,
     )
     yield
@@ -97,6 +107,7 @@ for router in (
     files_router,
     integrations_router,
     automation_router,
+    desktop_router,
     realtime_router,
 ):
     app.include_router(router)
@@ -141,12 +152,13 @@ def route_manifest():
 
 
 def _serve_frontend(path: str):
-    index = FRONTEND_DIR / "index.html"
+    frontend_dir = _frontend_dir()
+    index = frontend_dir / "index.html"
     if not index.is_file():
         return JSONResponse(status_code=503, content={"detail": "JARVIS frontend has not been built yet. Run: cd frontend && pnpm install && pnpm build"})
     if path:
-        candidate = (FRONTEND_DIR / path).resolve()
-        if FRONTEND_DIR.resolve() in candidate.parents and candidate.is_file():
+        candidate = (frontend_dir / path).resolve()
+        if frontend_dir.resolve() in candidate.parents and candidate.is_file():
             return FileResponse(candidate)
     return FileResponse(index)
 

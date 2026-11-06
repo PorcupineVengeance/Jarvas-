@@ -8,6 +8,8 @@ import {
   getPreferredVoice,
   playAudioBlob,
   setPreferredVoice,
+  setVoiceBusy,
+  shouldUseServerStt,
   speakWithBrowser,
   startBrowserListen,
   startVoiceCapture,
@@ -80,9 +82,10 @@ export default function VoicePage() {
   const ttsReady = integrations.find((item) => item.id === 'text_to_speech')?.configured ?? ttsReadyStatus;
 
   const speakReply = async (text: string) => {
-    const spoken = forSpeech(text);
+    const spoken = forSpeech(text, 1200);
     if (!spoken) return;
     setPhase('speaking');
+    setVoiceBusy(true);
     speakAbort.current?.abort();
     const controller = new AbortController();
     speakAbort.current = controller;
@@ -168,6 +171,7 @@ export default function VoicePage() {
     const token = ++listenTokenRef.current;
     setInCall(true);
     voiceLoopRef.current = true;
+    setVoiceBusy(true);
     setError('');
     setPhase('listening');
     setLevel(0.12);
@@ -178,30 +182,32 @@ export default function VoicePage() {
       setPhase('idle');
       setInCall(false);
       voiceLoopRef.current = false;
+      setVoiceBusy(false);
       return;
     }
     if (listenTokenRef.current !== token || !voiceLoopRef.current) return;
     try {
       let text = '';
-      if (browserSpeechSupported()) {
+      if (shouldUseServerStt(sttReady)) {
+        const handle = await startVoiceCapture({ maxMs: 30_000, silenceMs: 1400, minMs: 1500, onLevel: setLevel });
+        recordingRef.current = handle;
+        const file = await handle.promise;
+        recordingRef.current = null;
+        if (listenTokenRef.current !== token || !voiceLoopRef.current) return;
+        setPhase('transcribing');
+        const result = await api.transcribe(file);
+        text = result.text.trim();
+      } else if (browserSpeechSupported()) {
         const handle = startBrowserListen({
-          endSilenceMs: 280,
-          maxMs: 12_000,
+          endSilenceMs: 900,
+          maxMs: 14_000,
           onPartial: (value) => setLevel(value ? Math.min(1, 0.35 + value.length * 0.02) : 0.18),
         });
         recordingRef.current = handle;
         text = (await handle.promise).trim();
         recordingRef.current = null;
       } else {
-        if (!sttReady) throw new Error('Speech recognition is unavailable in this browser, and server STT is not configured.');
-        setPhase('transcribing');
-        const handle = await startVoiceCapture({ maxMs: 12_000, silenceMs: 700, onLevel: setLevel });
-        recordingRef.current = handle;
-        const file = await handle.promise;
-        recordingRef.current = null;
-        if (listenTokenRef.current !== token || !voiceLoopRef.current) return;
-        const result = await api.transcribe(file);
-        text = result.text.trim();
+        throw new Error('Speech recognition is unavailable in this browser, and server STT is not configured.');
       }
       if (listenTokenRef.current !== token || !voiceLoopRef.current) return;
       if (!text) {
@@ -214,7 +220,7 @@ export default function VoicePage() {
       recordingRef.current = null;
       if (listenTokenRef.current !== token) return;
       const message = e instanceof Error ? e.message : 'Voice capture failed.';
-      if (/no-speech|aborted|network|Speech recognition failed/i.test(message) && voiceLoopRef.current) {
+      if (/no-speech|aborted|network|Speech recognition failed|empty/i.test(message) && voiceLoopRef.current) {
         window.setTimeout(() => { if (voiceLoopRef.current) void beginRef.current(); }, 500);
         return;
       }
@@ -222,6 +228,7 @@ export default function VoicePage() {
       setPhase('idle');
       setInCall(false);
       voiceLoopRef.current = false;
+      setVoiceBusy(false);
     }
   };
   beginRef.current = beginCallListen;
@@ -237,6 +244,7 @@ export default function VoicePage() {
     setInCall(false);
     setPhase('idle');
     setLevel(0);
+    setVoiceBusy(false);
   };
 
   const onOrbClick = () => {
@@ -247,7 +255,10 @@ export default function VoicePage() {
       if (inCall) { voiceLoopRef.current = true; void beginCallListen(); }
       return;
     }
-    if (phase === 'thinking' || phase === 'transcribing') { endCall(); return; }
+    if (phase === 'thinking' || phase === 'transcribing') {
+      // Don't dump the user out of the call mid-thought — ignore extra taps.
+      return;
+    }
     void beginCallListen();
   };
 

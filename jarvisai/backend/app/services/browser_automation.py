@@ -5,14 +5,18 @@ class BrowserAutomationError(RuntimeError):
     pass
 
 
-async def open_and_search(query: str, site: str = "https://www.youtube.com/results?search_query=") -> dict:
+DEFAULT_WEB_SEARCH = "https://duckduckgo.com/?q="
+
+
+async def open_and_search(query: str, site: str = DEFAULT_WEB_SEARCH) -> dict:
     if not computer_control_enabled():
         raise BrowserAutomationError("Browser automation is disabled. Enable JARVIS_ENABLE_COMPUTER_CONTROL for local use.")
     from urllib.parse import quote_plus
     from app.services.computer_control import open_url
     if not query.strip() or len(query) > 300:
         raise BrowserAutomationError("Search query must be 1–300 characters.")
-    url = f"{site}{quote_plus(query.strip())}"
+    base = (site or DEFAULT_WEB_SEARCH).strip() or DEFAULT_WEB_SEARCH
+    url = f"{base}{quote_plus(query.strip())}"
     result = open_url(url)
     return {"action": "browser_search", "query": query.strip(), "url": url, "result": result}
 
@@ -23,7 +27,7 @@ async def fetch_page_text(url: str, max_chars: int = 20_000) -> dict:
     if not url.startswith(("http://", "https://")) or len(url) > 2_000:
         raise BrowserAutomationError("Only http(s) URLs are allowed.")
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, follow_redirects=True), headers={"User-Agent": "JARVIS-Research/1.0"}) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0), follow_redirects=True, headers={"User-Agent": "JARVIS-Research/1.0"}) as client:
             response = await client.get(url)
     except httpx.HTTPError as exc:
         raise BrowserAutomationError("The page could not be retrieved.") from exc

@@ -54,6 +54,9 @@ def system_status(db: Session = Depends(get_db), user: User = Depends(get_curren
         connected_integrations.append(f"Research ({settings.jarvis_research_provider})")
     if settings.jarvis_enable_computer_control:
         connected_integrations.append("Computer control")
+    if settings.is_desktop:
+        connected_integrations.append("JARVIS Desktop")
+    downloads = settings.desktop_download_urls
     return {
         "status": "online" if database_connected else "degraded",
         "api_connection": True,
@@ -72,7 +75,23 @@ def system_status(db: Session = Depends(get_db), user: User = Depends(get_curren
             "transcription": settings.transcription_ready,
             "text_to_speech": settings.tts_ready,
             "research": settings.research_ready,
+            "computer_control": settings.jarvis_enable_computer_control,
+            "desktop": settings.is_desktop,
+        },
+        "desktop": {
+            "is_desktop": settings.is_desktop,
+            "computer_control": settings.jarvis_enable_computer_control,
+            "allowed_paths": [str(p) for p in settings.allowed_paths] if settings.is_desktop else [],
+            "downloads": {
+                "mac": downloads.get("mac") or None,
+                "windows": downloads.get("windows") or None,
+                "configured": bool(downloads.get("configured")),
+            },
         },
         "microphone": {"available": None, "detail": "Microphone permissions are checked by the browser."},
-        "metrics_scope": "Application host only; these measurements do not describe the user's personal computer.",
+        "metrics_scope": (
+            "JARVIS Desktop host metrics for this machine."
+            if settings.is_desktop
+            else "Application host only; these measurements do not describe the user's personal computer."
+        ),
     }

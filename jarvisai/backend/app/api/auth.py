@@ -31,22 +31,53 @@ def _safe_origin(request: Request, supplied: str | None = None, check_header: bo
     return origin
 
 
+def _download_payload() -> dict:
+    downloads = get_settings().desktop_download_urls
+    return {
+        "mac": downloads.get("mac") or None,
+        "windows": downloads.get("windows") or None,
+        "configured": bool(downloads.get("configured")),
+        "base": downloads.get("base") or None,
+    }
+
+
 @router.get("/config")
 def auth_config():
     settings = get_settings()
-    if settings.jarvis_open_access:
+    downloads = _download_payload()
+    base = {
+        "downloads": downloads,
+        "supabase_available": settings.supabase_auth_ready,
+        "local_available": settings.local_auth_ready,
+        "open_access": settings.effective_open_access,
+        "is_desktop": settings.is_desktop,
+    }
+    if settings.effective_open_access and not settings.supabase_auth_ready:
         return {
+            **base,
             "available": True,
             "provider": "Open access",
-            "local_available": True,
             "open_access": True,
             "reason": None,
         }
+    if settings.supabase_auth_ready:
+        return {
+            **base,
+            "available": True,
+            "provider": "Supabase",
+            "open_access": settings.effective_open_access,
+            "reason": None,
+        }
     if settings.oauth_ready:
-        return {"available": True, "provider": "Manus OAuth", "local_available": settings.local_auth_ready, "open_access": False, "reason": None}
+        return {**base, "available": True, "provider": "Manus OAuth", "reason": None}
     if settings.local_auth_ready:
-        return {"available": True, "provider": "Local session", "local_available": True, "open_access": False, "reason": None}
-    return {"available": False, "provider": "none", "local_available": False, "open_access": False, "reason": "Configure Manus OAuth or enable JARVIS_LOCAL_AUTH_ENABLED with JARVIS_LOCAL_AUTH_SECRET."}
+        return {**base, "available": True, "provider": "Local session", "reason": None}
+    return {
+        **base,
+        "available": False,
+        "provider": "none",
+        "reason": "Configure Supabase Auth (SUPABASE_URL + SUPABASE_ANON_KEY), local auth, or Manus OAuth.",
+    }
 
 
 @router.get("/session")
@@ -59,13 +90,13 @@ def session(request: Request):
             claims = decode_session(token)
             return {
                 "authenticated": True,
-                "open_access": settings.jarvis_open_access,
+                "open_access": settings.effective_open_access,
                 "user": {"id": claims["openId"], "name": claims.get("name", "JARVIS user"), "email": claims.get("email")},
             }
         except HTTPException:
-            if not settings.jarvis_open_access:
+            if not settings.effective_open_access:
                 return {"authenticated": False, "open_access": False}
-    if settings.jarvis_open_access:
+    if settings.effective_open_access:
         return {
             "authenticated": True,
             "open_access": True,
@@ -80,6 +111,85 @@ def session(request: Request):
 
 class LocalLoginRequest(BaseModel):
     display_name: str | None = Field(default=None, max_length=120)
+
+
+class EmailAuthRequest(BaseModel):
+    name: str | None = Field(default=None, max_length=120)
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=8, max_length=128)
+
+
+def _issue_supabase_session(response: Response, request: Request, user: dict) -> dict:
+    settings = get_settings()
+    secret = settings.session_signing_secret
+    if not secret:
+        raise HTTPException(status_code=503, detail="Session signing is not configured.")
+    now = datetime.now(timezone.utc)
+    claims = {
+        "openId": user["id"],
+        "appId": "jarvis-supabase",
+        "authMode": "supabase",
+        "name": user.get("name") or "JARVIS user",
+        "email": user.get("email"),
+        "iat": now,
+        "exp": now + timedelta(seconds=settings.jarvis_session_ttl_seconds),
+    }
+    token = jwt.encode(claims, secret, algorithm="HS256")
+    origin = request.headers.get("origin")
+    response.set_cookie(value=token, **session_cookie_options(origin))
+    return {
+        "ok": True,
+        "authenticated": True,
+        "open_access": False,
+        "needs_confirmation": False,
+        "user": {"id": user["id"], "name": user.get("name") or "JARVIS user", "email": user.get("email")},
+    }
+
+
+@router.post("/signup")
+async def signup(request: Request, response: Response, body: EmailAuthRequest):
+    settings = get_settings()
+    if not settings.supabase_auth_ready:
+        raise HTTPException(status_code=503, detail="Supabase signup is not configured. Set SUPABASE_URL and SUPABASE_ANON_KEY.")
+    name = (body.name or "").strip()
+    if not name or len(name) < 2:
+        raise HTTPException(status_code=422, detail="Enter your name (at least 2 characters).")
+    email = body.email.strip().lower()
+    if "@" not in email or "." not in email.split("@")[-1]:
+        raise HTTPException(status_code=422, detail="Enter a valid email address.")
+    from app.services.supabase_auth import SupabaseAuthError, signup as supabase_signup
+
+    try:
+        result = await supabase_signup(name, email, body.password)
+    except SupabaseAuthError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+    if result.get("needs_confirmation"):
+        return {
+            "ok": True,
+            "authenticated": False,
+            "needs_confirmation": True,
+            "message": result.get("message") or "Confirm your email, then sign in.",
+            "user": result.get("user"),
+        }
+    return _issue_supabase_session(response, request, result["user"])
+
+
+@router.post("/login-password")
+async def login_password(request: Request, response: Response, body: EmailAuthRequest):
+    settings = get_settings()
+    if not settings.supabase_auth_ready:
+        raise HTTPException(status_code=503, detail="Supabase login is not configured. Set SUPABASE_URL and SUPABASE_ANON_KEY.")
+    email = body.email.strip().lower()
+    if "@" not in email:
+        raise HTTPException(status_code=422, detail="Enter a valid email address.")
+    from app.services.supabase_auth import SupabaseAuthError, login as supabase_login
+
+    try:
+        result = await supabase_login(email, body.password)
+    except SupabaseAuthError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    return _issue_supabase_session(response, request, result["user"])
 
 
 @router.post("/local-login")

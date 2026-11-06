@@ -18,6 +18,19 @@ def _ensure_user(db: Session, open_id: str, display_name: str, email: str | None
         except Exception as exc:
             db.rollback()
             raise HTTPException(status_code=503, detail="User storage is temporarily unavailable.") from exc
+        return user
+    changed = False
+    if display_name and user.display_name != display_name:
+        user.display_name = display_name
+        changed = True
+    if email and user.email != email:
+        user.email = email
+        changed = True
+    if changed:
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
     return user
 
 
@@ -35,8 +48,8 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
                 claims.get("email"),
             )
         except HTTPException:
-            if not settings.jarvis_open_access:
+            if not settings.effective_open_access:
                 raise
-    if settings.jarvis_open_access:
+    if settings.effective_open_access:
         return _ensure_user(db, OPEN_ACCESS_USER_ID, settings.jarvis_local_auth_display_name or "Operator")
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Sign in to use JARVIS.")

@@ -3,7 +3,38 @@ export type Session = { authenticated: boolean; open_access?: boolean; user?: Us
 export type Task = { id: string; title: string; description?: string | null; status: string; priority: string; due_at?: string | null; created_at: string; updated_at: string };
 export type MemoryItem = { id: string; category: string; content: string; created_at: string; updated_at: string };
 export type Integration = { id: string; name: string; configured: boolean; status: string; detail: string };
-export type AppStatus = { status: string; api_connection: boolean; time: string; cpu_percent: number; memory_percent: number; disk_percent: number; active_tasks: number; active_processes: Array<{ name: string; memory_mb: number }>; worker_count: number; connected_integrations: string[]; database: { connected: boolean }; providers: { llm: boolean; llm_name: string; transcription: boolean; text_to_speech: boolean; research?: boolean }; microphone: { available: boolean | null; detail: string }; metrics_scope: string };
+export type DesktopInfo = {
+  is_desktop: boolean;
+  computer_control: boolean;
+  live_web?: boolean;
+  bluetooth?: boolean;
+  allowed_paths: string[];
+  preferences?: { computer_control: boolean; live_web?: boolean; bluetooth?: boolean; allowed_paths: string[] } | null;
+  downloads: { mac: string | null; windows: string | null; configured: boolean; base?: string };
+  notice: string;
+};
+export type AppStatus = {
+  status: string;
+  api_connection: boolean;
+  time: string;
+  cpu_percent: number;
+  memory_percent: number;
+  disk_percent: number;
+  active_tasks: number;
+  active_processes: Array<{ name: string; memory_mb: number }>;
+  worker_count: number;
+  connected_integrations: string[];
+  database: { connected: boolean };
+  providers: { llm: boolean; llm_name: string; transcription: boolean; text_to_speech: boolean; research?: boolean; computer_control?: boolean; desktop?: boolean };
+  desktop?: {
+    is_desktop: boolean;
+    computer_control: boolean;
+    allowed_paths: string[];
+    downloads: { mac: string | null; windows: string | null; configured: boolean };
+  };
+  microphone: { available: boolean | null; detail: string };
+  metrics_scope: string;
+};
 export type ChatMessage = { id: string; role: 'user' | 'assistant'; content: string };
 export type Tool = { id: string; name: string; description: string; permission: string; write: boolean; input_schema: Record<string, unknown> };
 export type FileRecord = { id: string; filename: string; content_type: string; size_bytes: number; created_at: string; asset_path: string };
@@ -25,13 +56,39 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
-  authConfig: () => request<{ available: boolean; provider: string; local_available?: boolean; open_access?: boolean; reason: string | null }>('/api/auth/config'),
+  authConfig: () => request<{
+    available: boolean;
+    provider: string;
+    local_available?: boolean;
+    supabase_available?: boolean;
+    open_access?: boolean;
+    is_desktop?: boolean;
+    reason: string | null;
+    downloads?: { mac: string | null; windows: string | null; configured: boolean; base?: string | null };
+  }>('/api/auth/config'),
   session: () => request<Session>('/api/auth/session'),
   login: () => { window.location.assign(`/api/auth/login?origin=${encodeURIComponent(window.location.origin)}`); },
   localLogin: (displayName?: string) => request<{ ok: boolean; authenticated: boolean; open_access?: boolean; user: User }>('/api/auth/local-login', { method: 'POST', body: JSON.stringify({ display_name: displayName || undefined }) }),
+  signup: (body: { name: string; email: string; password: string }) =>
+    request<{ ok: boolean; authenticated: boolean; needs_confirmation?: boolean; message?: string; open_access?: boolean; user?: User }>('/api/auth/signup', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  loginPassword: (body: { email: string; password: string; name?: string }) =>
+    request<{ ok: boolean; authenticated: boolean; open_access?: boolean; user: User }>('/api/auth/login-password', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
   logout: () => request<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
   status: () => request<AppStatus>('/api/system/status'),
   integrations: () => request<{ items: Integration[]; checked_at: string }>('/api/integrations'),
+  desktopInfo: () => request<DesktopInfo>('/api/desktop/info'),
+  desktopSettings: () => request<{ computer_control: boolean; live_web?: boolean; bluetooth?: boolean; allowed_paths: string[] }>('/api/desktop/settings'),
+  updateDesktopSettings: (body: { computer_control: boolean; live_web?: boolean; bluetooth?: boolean; allowed_paths: string[] }) =>
+    request<{ ok: boolean; computer_control: boolean; live_web?: boolean; bluetooth?: boolean; allowed_paths: string[]; applied: boolean; message: string }>('/api/desktop/settings', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
   tools: () => request<{ tools: Tool[]; notice: string }>('/api/tools'),
   executeTool: (toolId: string, arguments_: Record<string, unknown>, confirmed = false) => request<{ execution_id: string; status: string; tool_id: string; result: unknown }>('/api/automation/execute', { method: 'POST', body: JSON.stringify({ tool_id: toolId, arguments: arguments_, confirmed }) }),
   tasks: () => request<Task[]>('/api/tasks'),

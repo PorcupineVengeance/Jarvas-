@@ -88,8 +88,11 @@ async def run_tool(tool_id: str, arguments: dict[str, Any], db: Session, user: U
     if tool.write and not confirmed:
         raise PermissionError("Confirm this change before it is executed.")
     if tool.requires_computer:
-        from app.core.permissions import computer_control_enabled
-        if not computer_control_enabled():
+        from app.core.permissions import bluetooth_control_enabled, computer_control_enabled
+        if tool.category == "bluetooth":
+            if not bluetooth_control_enabled():
+                raise PermissionError("Bluetooth control is disabled in Settings.")
+        elif not computer_control_enabled():
             raise PermissionError("Computer control is disabled in configuration.")
     execution = ToolExecution(id=str(uuid4()), user_id=user.open_id, tool_id=tool_id, status="running", started_at=datetime.now(timezone.utc))
     db.add(execution)

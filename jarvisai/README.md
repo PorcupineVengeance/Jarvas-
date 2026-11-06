@@ -13,6 +13,7 @@ JARVIS is a modular personal AI assistant with a React/TypeScript frontend and a
 - Local file upload/index/extraction (PDF, DOCX, XLSX, CSV, TXT, JSON, Markdown)
 - Allow-listed tool registry with confirmation for write actions
 - Optional local computer control (open apps/URLs/paths, screenshots, authorized file ops)
+- **JARVIS Desktop** (Electron) for macOS/Windows with tray, local sidecar, and permissioned laptop control
 - System status, integrations readiness, WebSocket live chat events
 
 Calendar and email remain integration-ready stubs until provider credentials are added. Wake-word continuous listening stays off unless explicitly enabled.
@@ -62,6 +63,8 @@ Never commit `.env`. Placeholders live in `.env.example`.
 | `JARVIS_RESEARCH_PROVIDER` | `duckduckgo` (default), `tavily`, or `manus` |
 | `JARVIS_ENABLE_COMPUTER_CONTROL` | Local desktop automation |
 | `JARVIS_ALLOWED_PATHS` | Comma-separated authorized directories |
+| `JARVIS_DESKTOP` | Set by Electron; marks a desktop runtime |
+| `JARVIS_DESKTOP_DOWNLOAD_BASE` | Public URL hosting `JARVIS-mac.dmg` / `JARVIS-win.exe` |
 | `DATABASE_URL` | Default `sqlite:///./data/jarvis.db` |
 | `JARVIS_STORAGE_DIR` | Local uploads/reports directory |
 
@@ -78,6 +81,8 @@ Never commit `.env`. Placeholders live in `.env.example`.
 | `GET/POST/DELETE /api/reminders` | Persistent reminders; `GET /due` fires due items |
 | `GET /api/system/status` | Host metrics + provider readiness |
 | `GET /api/integrations` | Truthful connector status |
+| `GET /api/desktop/info` | Desktop runtime + download URLs |
+| `GET/PUT /api/desktop/settings` | Desktop permission preferences (desktop only) |
 | `GET /api/tools` + `POST /api/automation/execute` | Allow-listed tools |
 | `POST /api/voice/transcribe` | Multipart audio → text |
 | `POST /api/voice/speak` | Text → audio |
@@ -94,6 +99,19 @@ Example chat body:
   "mode": "research"
 }
 ```
+
+## JARVIS Desktop (macOS + Windows)
+
+Installable app so JARVIS can help on the user’s laptop with **explicit folder permissions**.
+
+```bash
+# Build installers for the current OS
+bash desktop/scripts/build-desktop.sh
+```
+
+See [desktop/README.md](desktop/README.md) for development, packaging, signing notes, and publishing download links. In the web UI, **Settings → Get Desktop** and **About** surface macOS/Windows downloads when `JARVIS_DESKTOP_DOWNLOAD_BASE` is set.
+
+On desktop, Automation mode (and auto-detected “open Chrome / take a screenshot” style requests) can call allow-listed computer tools. The hosted web app never claims laptop control.
 
 ## Testing
 
@@ -117,6 +135,7 @@ jarvisai/
 │   ├── database/     # SQLAlchemy session
 │   └── models.py
 ├── frontend/         # React interface (independent)
+├── desktop/          # Electron shell + packaging scripts
 ├── storage/          # local uploads (created at runtime)
 ├── data/             # SQLite database
 ├── .env.example
@@ -127,6 +146,7 @@ jarvisai/
 
 - Calendar and email need provider OAuth adapters before they can act.
 - Wake-word detection is configuration-gated and not a full always-on service in this build.
-- Computer control only runs when explicitly enabled on a trusted local machine and is limited to authorized paths.
-- Hosted/cloud deployments must not claim personal desktop control without a local companion.
+- Computer control only runs when explicitly enabled on a trusted local machine (or JARVIS Desktop) and is limited to authorized paths.
+- Hosted/cloud deployments must keep computer control off; users download JARVIS Desktop for laptop automation.
+- Desktop installers are unsigned by default; notarization/Authenticode is a manual distribution step.
 - DuckDuckGo results are snippet-level; deeper page analysis needs an explicit fetch step.

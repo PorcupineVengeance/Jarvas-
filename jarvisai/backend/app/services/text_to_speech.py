@@ -25,9 +25,9 @@ async def _fish_tts(text: str, voice: str | None, speed: float) -> tuple[bytes, 
         "format": "mp3",
         "prosody": {"speed": max(0.5, min(2.0, speed)), "volume": 0, "normalize_loudness": False},
     }
-    chosen_voice = voice or settings.jarvis_tts_voice
-    if chosen_voice:
-        payload["reference_id"] = chosen_voice
+    # Fish requires a reference voice id; fall back to the project default when unset.
+    chosen_voice = (voice or settings.jarvis_tts_voice or "").strip() or "41f0953d7a6b4c078445c7e65d620eeb"
+    payload["reference_id"] = chosen_voice
     headers = {
         "Authorization": f"Bearer {settings.jarvis_tts_api_key}",
         "Content-Type": "application/json",

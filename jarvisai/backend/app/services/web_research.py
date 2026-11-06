@@ -151,9 +151,44 @@ async def _duckduckgo_search(query: str, max_results: int) -> dict[str, Any]:
         if len(unique) >= max_results:
             break
 
+    # 4) Wikipedia OpenSearch — reliable fallback for people/places/topics.
     if not unique:
-        detail = "; ".join(errors) if errors else "no provider responses"
-        raise ProviderRequestFailed(f"DuckDuckGo returned no results ({detail}).")
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=6.0), follow_redirects=True) as client:
+                response = await client.get(
+                    "https://en.wikipedia.org/w/api.php",
+                    params={
+                        "action": "opensearch",
+                        "search": query,
+                        "limit": max_results,
+                        "namespace": 0,
+                        "format": "json",
+                    },
+                    headers={"User-Agent": "JARVIS-Research/1.0"},
+                )
+            if not response.is_error:
+                data = response.json()
+                titles = data[1] if isinstance(data, list) and len(data) > 1 else []
+                descs = data[2] if isinstance(data, list) and len(data) > 2 else []
+                urls = data[3] if isinstance(data, list) and len(data) > 3 else []
+                for index, title in enumerate(titles):
+                    unique.append({
+                        "title": title,
+                        "url": urls[index] if index < len(urls) else None,
+                        "snippet": descs[index] if index < len(descs) else None,
+                    })
+        except Exception as exc:
+            errors.append(f"wikipedia:{exc}")
+
+    if not unique:
+        # Soft empty payload so chat can explain the miss instead of hard-failing the turn.
+        return {
+            "provider": "duckduckgo",
+            "query": query,
+            "results": [],
+            "errors": errors[:6],
+            "source_note": "No live web results were returned. Say so clearly; do not invent sources.",
+        }
 
     return {
         "provider": "duckduckgo",

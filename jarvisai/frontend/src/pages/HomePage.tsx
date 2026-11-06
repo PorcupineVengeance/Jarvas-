@@ -1,8 +1,9 @@
 import { FormEvent, useEffect, useRef, useState, type CSSProperties } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Activity, AudioLines, Check, ChevronRight, CircleStop, FileText, MessageSquareText, Mic, Plus, Send, Settings2, ShieldAlert, Sparkles, Volume2, X } from 'lucide-react';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { Activity, AudioLines, Check, ChevronRight, CircleStop, Download, FileText, MessageSquareText, Mic, Monitor, Plus, Send, Settings2, ShieldAlert, Sparkles, Volume2, X } from 'lucide-react';
 import { api, type AppStatus, type Task, type User } from '../lib/api';
-import { browserSpeechSupported, ensureMicrophonePermissionCached, forSpeech, getPreferredVoice, playAudioBlob, speakWithBrowser, startBrowserListen, startVoiceCapture, type LiveListenHandle, type RecordingHandle } from '../lib/voiceConversation';
+import { isJarvisDesktop } from '../lib/desktop';
+import { browserSpeechSupported, ensureMicrophonePermissionCached, forSpeech, getPreferredVoice, playAudioBlob, setVoiceBusy, shouldUseServerStt, speakWithBrowser, startBrowserListen, startVoiceCapture, type LiveListenHandle, type RecordingHandle } from '../lib/voiceConversation';
 
 function Meter({ label, value, display }: { label: string; value?: number; display: string }) {
   const safeValue = Math.max(0, Math.min(100, value ?? 0));
@@ -48,6 +49,7 @@ type Phase = 'idle' | 'listening' | 'transcribing' | 'thinking' | 'speaking';
 
 export default function HomePage({ user }: { user: User }) {
   const navigate = useNavigate();
+  const location = useLocation();
   const inputRef = useRef<HTMLInputElement>(null);
   const chatAbortRef = useRef<AbortController | null>(null);
   const speakAbortRef = useRef<AbortController | null>(null);
@@ -66,9 +68,15 @@ export default function HomePage({ user }: { user: User }) {
   const [phase, setPhase] = useState<Phase>('idle');
   const [chatError, setChatError] = useState('');
   const [level, setLevel] = useState(0);
+  const [voiceHint, setVoiceHint] = useState('');
+  const emptyListenRef = useRef(0);
+  const phaseRef = useRef<Phase>('idle');
+  const runChatTurnRef = useRef<(text: string, options?: { continueListening?: boolean }) => Promise<void>>(async () => undefined);
+  const speakReplyRef = useRef<(text: string) => Promise<void>>(async () => undefined);
   const layoutRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { conversationIdRef.current = conversationId; }, [conversationId]);
+  useEffect(() => { phaseRef.current = phase; }, [phase]);
 
   useEffect(() => {
     const root = layoutRef.current;
@@ -112,6 +120,12 @@ export default function HomePage({ user }: { user: User }) {
   }, []);
 
   useEffect(() => {
+    // Ensure wake-word can re-arm after a remount / interrupted call.
+    setVoiceBusy(false);
+    voiceLoopRef.current = false;
+  }, []);
+
+  useEffect(() => {
     let alive = true;
     const refresh = async () => {
       try {
@@ -143,9 +157,10 @@ export default function HomePage({ user }: { user: User }) {
   const busy = phase !== 'idle';
 
   const speakReply = async (text: string) => {
-    const spoken = forSpeech(text);
+    const spoken = forSpeech(text, 1200);
     if (!spoken) return;
     setPhase('speaking');
+    setVoiceBusy(true);
     setLevel(0.45);
     speakAbortRef.current?.abort();
     const local = new AbortController();
@@ -245,52 +260,78 @@ export default function HomePage({ user }: { user: User }) {
       if (chatAbortRef.current === controller) chatAbortRef.current = null;
       setPhase('idle');
       setLevel(0);
+      setVoiceBusy(Boolean(continueListening && voiceLoopRef.current && !failed));
       if (continueListening && voiceLoopRef.current && !failed) {
-        window.setTimeout(() => { if (voiceLoopRef.current) void beginListeningRef.current(); }, 160);
-      } else if (!voiceLoopRef.current) {
-        window.setTimeout(() => inputRef.current?.focus(), 40);
+        window.setTimeout(() => { if (voiceLoopRef.current) void beginListeningRef.current(); }, 280);
+      } else {
+        setVoiceBusy(false);
+        if (!voiceLoopRef.current) window.setTimeout(() => inputRef.current?.focus(), 40);
       }
     }
   };
 
-  const scheduleRelisten = (delayMs = 120) => {
-    window.setTimeout(() => {
-      if (voiceLoopRef.current) void beginListeningRef.current();
-    }, delayMs);
-  };
-
   const beginListening = async () => {
     if (!llmReady) {
-      setChatError('The AI provider is not connected.');
+      setChatError('AI is still connecting — wait a second for Systems Online, then tap again.');
       return;
     }
-    // Cancel any in-flight listen before starting a new turn (ChatGPT-style call).
+    // Cancel any in-flight listen before starting a new turn.
     recordingRef.current?.stop();
     recordingRef.current = null;
     const token = ++listenTokenRef.current;
     setVoiceMode(true);
     voiceLoopRef.current = true;
+    setVoiceBusy(true);
     setChatError('');
+    setVoiceHint('Listening — speak, then TAP AGAIN when done');
     setPhase('listening');
-        setLevel(0.12);
+    setLevel(0.2);
     try {
       await ensureMicrophonePermissionCached();
     } catch (e) {
       if (listenTokenRef.current !== token) return;
       setPhase('idle');
-      setChatError(e instanceof Error ? e.message : 'Microphone permission is required.');
+      setChatError(
+        e instanceof Error
+          ? e.message
+          : 'Microphone blocked. Allow mic for JARVIS/Electron in macOS System Settings → Privacy & Security → Microphone.',
+      );
       voiceLoopRef.current = false;
       setVoiceMode(false);
+      setVoiceBusy(false);
+      setVoiceHint('');
       return;
     }
     if (listenTokenRef.current !== token || !voiceLoopRef.current) return;
 
     try {
       let text = '';
-      if (browserSpeechSupported()) {
+      let serverStt = shouldUseServerStt(sttReady);
+      if (!serverStt) {
+        try {
+          const voice = await api.status();
+          serverStt = shouldUseServerStt(Boolean(voice.providers.transcription));
+        } catch { /* keep prior */ }
+      }
+      if (serverStt) {
+        const handle = await startVoiceCapture({
+          maxMs: 45_000,
+          silenceMs: 1600,
+          minMs: 1800,
+          onLevel: setLevel,
+        });
+        recordingRef.current = handle;
+        const file = await handle.promise;
+        recordingRef.current = null;
+        if (listenTokenRef.current !== token || !voiceLoopRef.current) return;
+        setPhase('transcribing');
+        setVoiceHint('Got it — transcribing…');
+        const result = await api.transcribe(file);
+        text = result.text.trim();
+      } else if (browserSpeechSupported()) {
         const handle = startBrowserListen({
-          endSilenceMs: 280,
-          maxMs: 10_000,
+          endSilenceMs: 1100,
+          maxMs: 20_000,
           onPartial: (value) => {
             setLevel(value ? Math.min(1, 0.35 + value.length * 0.02) : 0.18);
           },
@@ -299,76 +340,117 @@ export default function HomePage({ user }: { user: User }) {
         text = (await handle.promise).trim();
         recordingRef.current = null;
       } else {
-        if (!sttReady) {
-          throw new Error('This browser has no speech recognition, and server STT is not configured.');
-        }
-        const handle = await startVoiceCapture({
-          maxMs: 12_000,
-          silenceMs: 700,
-          onLevel: setLevel,
-        });
-        recordingRef.current = handle;
-        const file = await handle.promise;
-        recordingRef.current = null;
-        if (listenTokenRef.current !== token || !voiceLoopRef.current) {
-          setPhase('idle');
-                    return;
-        }
-        setPhase('transcribing');
-                const result = await api.transcribe(file);
-        text = result.text.trim();
+        throw new Error('Speech recognition is unavailable and server STT is not configured.');
       }
 
-      if (listenTokenRef.current !== token || !voiceLoopRef.current) {
-        setPhase('idle');
-                return;
-      }
+      if (listenTokenRef.current !== token || !voiceLoopRef.current) return;
       if (!text) {
-        // Keep the call open — same as ChatGPT voice: quietly listen again.
+        setChatError('I didn’t catch any words. Tap the orb, speak clearly, then tap again when finished.');
+        setVoiceHint('Tap orb to try again');
         setPhase('listening');
-                setLevel(0.1);
-        scheduleRelisten(450);
+        setLevel(0.12);
+        recordingRef.current = null;
         return;
       }
+      emptyListenRef.current = 0;
       setDraft('');
+      setChatError('');
+      setVoiceHint('Thinking…');
       await runChatTurn(text, { continueListening: true });
     } catch (e) {
       recordingRef.current = null;
       if (listenTokenRef.current !== token) return;
+      const message = e instanceof Error ? e.message : 'Voice capture failed.';
+      // Stay in the call — never bounce back to idle home on a soft failure.
       if (voiceLoopRef.current) {
-        const message = e instanceof Error ? e.message : 'Voice capture failed.';
-        // Transient recognition blips: retry instead of killing the call.
-        if (/no-speech|aborted|network|Speech recognition failed/i.test(message)) {
-          scheduleRelisten(500);
-          return;
-        }
         setChatError(message);
-        voiceLoopRef.current = false;
-        setVoiceMode(false);
+        setVoiceHint('Tap orb to try again — or End call');
+        setPhase('listening');
+        setLevel(0.12);
+        return;
       }
       setPhase('idle');
-            setLevel(0);
+      setLevel(0);
+      setVoiceBusy(false);
     }
   };
   beginListeningRef.current = beginListening;
+  runChatTurnRef.current = runChatTurn;
+  speakReplyRef.current = speakReply;
+
+  useEffect(() => {
+    const handleWake = (command?: string) => {
+      const busyPhase = phaseRef.current;
+      if (voiceLoopRef.current || busyPhase === 'thinking' || busyPhase === 'transcribing' || busyPhase === 'speaking') return;
+      const queuedCommand = (command || window.sessionStorage.getItem('jarvis.wakeCommand') || '').trim();
+      window.sessionStorage.removeItem('jarvis.wakeCommand');
+      window.sessionStorage.removeItem('jarvis.startVoice');
+      if (queuedCommand) {
+        // “Hey JARVIS what’s the weather” → answer immediately.
+        setVoiceMode(true);
+        voiceLoopRef.current = true;
+        void runChatTurnRef.current(queuedCommand, { continueListening: true });
+        return;
+      }
+      // Bare “Hey/Yo JARVIS” → acknowledge, then listen for the request.
+      void (async () => {
+        setVoiceMode(true);
+        voiceLoopRef.current = true;
+        setVoiceHint('Yes, sir?');
+        try {
+          await speakReplyRef.current('Yes, sir?');
+        } catch { /* ignore ack failures */ }
+        if (voiceLoopRef.current) void beginListeningRef.current();
+      })();
+    };
+
+    const onWake = (event: Event) => {
+      const detail = (event as CustomEvent<{ command?: string }>).detail;
+      handleWake(detail?.command);
+    };
+    window.addEventListener('jarvis:wake', onWake);
+    return () => window.removeEventListener('jarvis:wake', onWake);
+  }, []);
+
+  useEffect(() => {
+    const queued = window.sessionStorage.getItem('jarvis.startVoice') === '1'
+      || Boolean((location.state as { startVoice?: boolean } | null)?.startVoice);
+    if (!queued) return;
+    const command = window.sessionStorage.getItem('jarvis.wakeCommand') || '';
+    window.sessionStorage.removeItem('jarvis.startVoice');
+    window.setTimeout(() => {
+      if (voiceLoopRef.current) return;
+      window.dispatchEvent(new CustomEvent('jarvis:wake', { detail: { command } }));
+    }, 120);
+  }, [location.state]);
 
   const stopEverything = () => {
     voiceLoopRef.current = false;
     listenTokenRef.current += 1;
+    emptyListenRef.current = 0;
     recordingRef.current?.stop();
     recordingRef.current = null;
     chatAbortRef.current?.abort();
     speakAbortRef.current?.abort();
     if ('speechSynthesis' in window) window.speechSynthesis.cancel();
     setPhase('idle');
-        setLevel(0);
+    setLevel(0);
+    setVoiceBusy(false);
+    setVoiceHint('');
   };
 
   const onCoreClick = () => {
     setChatError('');
     if (phase === 'listening') {
-      // Finish this utterance early (user done speaking).
-      recordingRef.current?.stop();
+      if (recordingRef.current) {
+        // User finished speaking — process this turn.
+        setVoiceHint('Processing your speech…');
+        emptyListenRef.current = 0;
+        recordingRef.current.stop();
+      } else {
+        // Listening UI open but no active recorder (e.g. empty last turn) — start fresh.
+        void beginListening();
+      }
       return;
     }
     if (phase === 'speaking') {
@@ -382,8 +464,7 @@ export default function HomePage({ user }: { user: User }) {
       return;
     }
     if (phase === 'thinking' || phase === 'transcribing') {
-      stopEverything();
-      setVoiceMode(false);
+      // Keep the call alive while JARVIS is working.
       return;
     }
     void beginListening();
@@ -408,11 +489,27 @@ export default function HomePage({ user }: { user: User }) {
     setChatError('');
       };
 
+  const onDesktop = isJarvisDesktop() || Boolean(status?.desktop?.is_desktop);
+  const downloads = status?.desktop?.downloads;
+  const preferWindows = typeof navigator !== 'undefined' && /win/i.test(navigator.platform || navigator.userAgent || '');
+  const desktopDownload = preferWindows
+    ? (downloads?.windows || downloads?.mac || '')
+    : (downloads?.mac || downloads?.windows || '');
   const actions = [
     { title: 'Open Chat', icon: MessageSquareText, onClick: () => navigate('/chat', conversationId ? { state: { conversationId } } : undefined) },
     { title: 'Open Files', icon: FileText, onClick: () => navigate('/tools', { state: { focus: 'files' } }) },
     { title: 'Voice', icon: AudioLines, onClick: () => navigate('/voice') },
     { title: 'Settings', icon: Settings2, onClick: () => navigate('/settings') },
+    onDesktop
+      ? { title: 'Desktop', icon: Monitor, onClick: () => navigate('/settings') }
+      : {
+          title: 'Get Desktop',
+          icon: Download,
+          onClick: () => {
+            if (desktopDownload) window.open(desktopDownload, '_blank', 'noopener,noreferrer');
+            else navigate('/settings');
+          },
+        },
   ];
 
   const hudState = phase === 'listening' ? 'listening' : phase === 'speaking' ? 'speaking' : phase === 'thinking' || phase === 'transcribing' ? 'working' : 'idle';
@@ -480,10 +577,11 @@ export default function HomePage({ user }: { user: User }) {
         {voiceMode ? (
           <div className="voice-call-badge" aria-live="polite">
             <span className={`voice-call-pulse state-${hudState}`} />
-            <strong>{phase === 'listening' ? 'Listening' : phase === 'speaking' ? 'JARVIS speaking' : phase === 'thinking' || phase === 'transcribing' ? 'Thinking' : 'Voice call'}</strong>
+            <strong>{phase === 'listening' ? 'Listening — tap again when done' : phase === 'speaking' ? 'JARVIS speaking' : phase === 'thinking' || phase === 'transcribing' ? 'Thinking' : 'Voice call'}</strong>
             <button type="button" onClick={endVoiceCall} aria-label="End voice call"><X size={14} /></button>
           </div>
         ) : null}
+        {chatError ? <div className="voice-error-banner" role="alert">{chatError}</div> : null}
 
         <button
           type="button"
@@ -533,8 +631,15 @@ export default function HomePage({ user }: { user: User }) {
         <button
           className={`dock-voice${phase === 'listening' || voiceMode ? ' is-hot' : ''}`}
           onClick={() => {
-            if (voiceMode && phase === 'listening') recordingRef.current?.stop();
-            else if (voiceMode) endVoiceCall();
+            if (voiceMode && phase === 'listening') {
+              if (recordingRef.current) {
+                setVoiceHint('Processing your speech…');
+                emptyListenRef.current = 0;
+                recordingRef.current.stop();
+              } else {
+                void beginListening();
+              }
+            } else if (voiceMode) endVoiceCall();
             else void beginListening();
           }}
           aria-label={voiceMode ? (phase === 'listening' ? 'Finish speaking' : 'End voice call') : 'Start voice conversation'}
@@ -562,7 +667,7 @@ export default function HomePage({ user }: { user: User }) {
           </form>
         ) : (
           <div className="voice-dock-status">
-            <span>{phase === 'listening' ? 'Speak — then pause' : phase === 'speaking' ? 'Speaking out loud — tap orb to interrupt' : phase === 'thinking' || phase === 'transcribing' ? 'Thinking…' : 'Connected'}</span>
+            <span>{voiceHint || (phase === 'listening' ? 'Speak — then tap the orb when done' : phase === 'speaking' ? 'Speaking out loud — tap orb to interrupt' : phase === 'thinking' || phase === 'transcribing' ? 'Thinking…' : 'Connected')}</span>
             <button type="button" className="end-call-button" onClick={endVoiceCall}>End call</button>
           </div>
         )}
