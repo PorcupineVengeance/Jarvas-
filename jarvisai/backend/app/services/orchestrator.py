@@ -361,13 +361,23 @@ async def _stream_with_tool_round(
     execute_calls,
     max_tokens: int | None = None,
     temperature: float = 0.5,
+    tool_choice: str | dict[str, Any] = "auto",
 ) -> AsyncIterator[tuple[str, str]]:
     try:
-        decision = await complete_with_tools(messages, tools)
+        decision = await complete_with_tools(messages, tools, tool_choice=tool_choice)
     except ProviderRequestFailed:
-        async for text in stream_completion(messages, max_tokens=max_tokens, temperature=temperature):
-            yield "delta", text
-        return
+        # Retry once with auto if required tool_choice was rejected by the provider.
+        if tool_choice != "auto":
+            try:
+                decision = await complete_with_tools(messages, tools, tool_choice="auto")
+            except ProviderRequestFailed:
+                async for text in stream_completion(messages, max_tokens=max_tokens, temperature=temperature):
+                    yield "delta", text
+                return
+        else:
+            async for text in stream_completion(messages, max_tokens=max_tokens, temperature=temperature):
+                yield "delta", text
+            return
 
     calls = decision.get("tool_calls")
     if not calls:
@@ -506,21 +516,183 @@ def _last_user_text(messages: list[dict[str, Any]]) -> str:
     return ""
 
 
+ACCESS_FORCE_TERMS = re.compile(
+    r"\b("
+    r"access|control|permission|full device|my (?:computer|laptop|pc|files|folder|desktop|downloads|documents)|"
+    r"open |launch |screenshot|storage|disk|settings|bluetooth|list (?:my |the )?files|"
+    r"read (?:the |my )?file|what(?:'s| is) on my"
+    r")\b",
+    re.I,
+)
+
+
+async def _combined_desktop_exec(
+    calls: list[Any],
+    safe_messages: list[dict[str, Any]],
+    *,
+    spoken: bool = False,
+) -> AsyncIterator[tuple[str, str]]:
+    for call in calls:
+        function = call.get("function") if isinstance(call, dict) else None
+        name = function.get("name") if isinstance(function, dict) else None
+        if not isinstance(name, str) or not name:
+            raise ProviderRequestFailed("The assistant returned an invalid tool name.")
+        try:
+            arguments = json.loads(function.get("arguments") or "{}")
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ProviderRequestFailed("Invalid tool arguments.") from exc
+        if not isinstance(arguments, dict):
+            raise ProviderRequestFailed("Tool arguments must be an object.")
+        call_id = call.get("id")
+        if not isinstance(call_id, str) or not call_id or len(call_id) > 160:
+            raise ProviderRequestFailed("Invalid tool call id.")
+
+        if name in LIVE_TOOL_NAMES:
+            yield "status", {
+                "research_search": "Searching the web…",
+                "research_fetch": "Reading a web page…",
+                "weather_lookup": "Checking live weather…",
+                "location_ip": "Resolving IP location…",
+                "time_now": "Reading system clock…",
+                "time_world_clock": "Checking world clock…",
+            }.get(name, "Using a live tool…")
+            try:
+                result = await _execute_live_tool(name, arguments)
+                payload = {"ok": True, "tool": name, "result": result}
+            except Exception as exc:
+                payload = {"ok": False, "tool": name, "error": str(exc)}
+        else:
+            tool_id = _tool_id_from_function_name(name)
+            if tool_id not in AUTOMATION_TOOL_IDS:
+                candidate = name.replace("_", ".")
+                if candidate in AUTOMATION_TOOL_IDS:
+                    tool_id = candidate
+                else:
+                    raise ProviderRequestFailed(f"Unsupported tool '{name}'.")
+            yield "status", f"Running {tool_id}…"
+            try:
+                result = await _execute_automation_tool(tool_id, arguments)
+                payload = {"ok": True, "tool_id": tool_id, "result": result}
+            except Exception as exc:
+                payload = {"ok": False, "tool_id": tool_id, "error": str(exc)}
+        safe_messages.append({
+            "role": "tool",
+            "tool_call_id": call_id,
+            "content": json.dumps(payload, ensure_ascii=False, default=str)[:18_000],
+        })
+
+    summary = (
+        "Summarize only the tool results above. If a tool failed, say so clearly. "
+        "Do not invent extra actions or sources. Do not claim you lack access if a tool succeeded."
+    )
+    if spoken:
+        summary += " Answer in 1–3 short spoken sentences. Plain speech only."
+    safe_messages.append({"role": "system", "content": summary})
+    async for text in stream_completion(
+        safe_messages,
+        max_tokens=550 if spoken else None,
+        temperature=0.4 if spoken else 0.5,
+    ):
+        yield "delta", text
+
+
+async def _desktop_tool_stream(
+    messages: list[dict[str, Any]],
+    *,
+    spoken: bool = False,
+    live_ok: bool = False,
+) -> AsyncIterator[tuple[str, str]]:
+    """Every Desktop turn gets real tools when permissions are on — no mode gatekeeping."""
+    computer_on = computer_control_enabled()
+    bluetooth_on = bluetooth_control_enabled()
+    enabled = computer_on or bluetooth_on
+    user_text = _last_user_text(messages)
+
+    prompt = _automation_guidance(messages, enabled, spoken=spoken)
+    # Live facts still work in the same round.
+    prompt = _research_guidance(prompt, live_ok, spoken=spoken)
+    if computer_on:
+        prompt.append({
+            "role": "system",
+            "content": (
+                "CRITICAL: Computer control is ENABLED on this Desktop session. "
+                "Never say you cannot access the computer, files, storage, settings, or folders. "
+                "Call computer_device_access, computer_storage, computer_open_path, files_list, "
+                "files_find, files_read, computer_open_app, computer_open_settings, or related tools instead. "
+                f"Full device access is {'ON (entire user home)' if full_device_access_enabled() else 'limited to allowed folders'}."
+            ),
+        })
+    if WEATHER_HINT.search(user_text):
+        prompt.append({
+            "role": "system",
+            "content": "Weather question — call weather_lookup (location 'here' if no city named).",
+        })
+    if TIME_HINT.search(user_text):
+        prompt.append({
+            "role": "system",
+            "content": "Date/time question — call time_now or time_world_clock. Never guess the clock.",
+        })
+    if LOCATION_HINT.search(user_text):
+        prompt.append({
+            "role": "system",
+            "content": "Location question — call location_ip.",
+        })
+
+    tools = _automation_tool_schemas()
+    if not computer_on:
+        tools = [tool for tool in tools if str(tool.get("function", {}).get("name", "")).startswith("bluetooth_")]
+    if not bluetooth_on:
+        tools = [tool for tool in tools if not str(tool.get("function", {}).get("name", "")).startswith("bluetooth_")]
+    # Clock tools always; other live tools when live web is on.
+    live_schemas = _live_tool_schemas()
+    if live_ok:
+        tools = tools + live_schemas
+    else:
+        tools = tools + [
+            tool for tool in live_schemas
+            if str(tool.get("function", {}).get("name", "")) in {"time_now", "time_world_clock"}
+        ]
+
+    if not tools:
+        async for text in stream_completion(prompt, max_tokens=550 if spoken else 800, temperature=0.4 if spoken else 0.5):
+            yield "delta", text
+        return
+
+    force_tools = bool(ACCESS_FORCE_TERMS.search(user_text) and (computer_on or bluetooth_on))
+    async for event in _stream_with_tool_round(
+        prompt,
+        tools,
+        execute_calls=lambda calls, safe: _combined_desktop_exec(calls, safe, spoken=spoken),
+        max_tokens=550 if spoken else 900,
+        temperature=0.4 if spoken else 0.45,
+        tool_choice="required" if force_tools else "auto",
+    ):
+        yield event
+
+
 async def orchestrated_stream(
     messages: list[dict[str, Any]],
     mode: str,
     *,
     spoken: bool = False,
 ) -> AsyncIterator[tuple[str, str]]:
+    from app.services.desktop_settings import sync_desktop_settings_from_disk
+
+    # Always re-apply Desktop permission JSON so toggles take effect without restart.
+    sync_desktop_settings_from_disk()
     settings = get_settings()
     live_ok = live_web_enabled() and settings.research_ready
 
-    # Research mode (including voice questions promoted for live facts).
+    # Desktop: tools every turn when permissions are on (voice/normal/auto all work).
+    if settings.is_desktop:
+        async for event in _desktop_tool_stream(messages, spoken=spoken, live_ok=live_ok):
+            yield event
+        return
+
+    # Research mode (hosted web / non-desktop).
     if mode == "research":
         research_messages = _research_guidance(messages, live_ok, spoken=spoken)
         user_text = _last_user_text(messages)
-        clock_only = (TIME_HINT.search(user_text) or LOCATION_HINT.search(user_text) or WEATHER_HINT.search(user_text)) and not live_ok
-        # Soft nudges so the model picks the right tool.
         if WEATHER_HINT.search(user_text):
             research_messages.append({
                 "role": "system",
@@ -540,7 +712,6 @@ async def orchestrated_stream(
                 "content": "This looks like a location question — call location_ip for approximate city from public IP.",
             })
 
-        # When live web is off, still allow accurate clock tools (and fail clearly for weather/location).
         schemas = _live_tool_schemas()
         if not live_ok:
             if not (TIME_HINT.search(user_text) or LOCATION_HINT.search(user_text) or WEATHER_HINT.search(user_text)):
@@ -555,7 +726,6 @@ async def orchestrated_stream(
                 tool for tool in schemas
                 if str(tool.get("function", {}).get("name", "")) in {"time_now", "time_world_clock", "weather_lookup", "location_ip"}
             ]
-            _ = clock_only  # kept for clarity; schemas already filtered
 
         async def _live_exec(calls: list[Any], safe_messages: list[dict[str, Any]]):
             async for event in _run_live_tools(calls, safe_messages, spoken=spoken):
@@ -572,125 +742,10 @@ async def orchestrated_stream(
         return
 
     if mode == "automation":
-        computer_on = computer_control_enabled()
-        bluetooth_on = bluetooth_control_enabled()
-        enabled = computer_on or bluetooth_on
-        automation_messages = _automation_guidance(messages, enabled, spoken=spoken)
-        # Also allow live answer tools when the user asked to research something while controlling the PC.
-        tools = _automation_tool_schemas()
-        if not computer_on:
-            tools = [tool for tool in tools if str(tool.get("function", {}).get("name", "")).startswith("bluetooth_")]
-        if not bluetooth_on:
-            tools = [tool for tool in tools if not str(tool.get("function", {}).get("name", "")).startswith("bluetooth_")]
-        if bluetooth_on:
-            automation_messages.append({
-                "role": "system",
-                "content": (
-                    "Bluetooth permission is enabled. For paired accessories use bluetooth_list / "
-                    "bluetooth_connect / bluetooth_disconnect with the device name."
-                ),
-            })
-        if live_ok:
-            tools = tools + _live_tool_schemas()
-            automation_messages.append({
-                "role": "system",
-                "content": (
-                    "If the user wants you to look something up and answer (not just open a page), "
-                    "use research_search / weather_lookup / research_fetch. "
-                    "If they want the browser opened for them, use browser_search or computer_open_url."
-                ),
-            })
-        if not enabled and not live_ok:
-            async for text in stream_completion(
-                automation_messages,
-                max_tokens=550 if spoken else None,
-                temperature=0.4 if spoken else 0.5,
-            ):
-                yield "delta", text
-            return
-        if not tools:
-            async for text in stream_completion(
-                automation_messages,
-                max_tokens=550 if spoken else None,
-                temperature=0.4 if spoken else 0.5,
-            ):
-                yield "delta", text
-            return
-
-        # Combined executor: desktop open/browse tools + live web/weather in one round.
-        async def _combined_exec(calls: list[Any], safe_messages: list[dict[str, Any]]):
-            for call in calls:
-                function = call.get("function") if isinstance(call, dict) else None
-                name = function.get("name") if isinstance(function, dict) else None
-                if not isinstance(name, str) or not name:
-                    raise ProviderRequestFailed("The assistant returned an invalid tool name.")
-                try:
-                    arguments = json.loads(function.get("arguments") or "{}")
-                except (TypeError, json.JSONDecodeError) as exc:
-                    raise ProviderRequestFailed("Invalid tool arguments.") from exc
-                if not isinstance(arguments, dict):
-                    raise ProviderRequestFailed("Tool arguments must be an object.")
-                call_id = call.get("id")
-                if not isinstance(call_id, str) or not call_id or len(call_id) > 160:
-                    raise ProviderRequestFailed("Invalid tool call id.")
-
-                if name in LIVE_TOOL_NAMES:
-                    yield "status", {
-                        "research_search": "Searching the web…",
-                        "research_fetch": "Reading a web page…",
-                        "weather_lookup": "Checking live weather…",
-                        "location_ip": "Resolving IP location…",
-                        "time_now": "Reading system clock…",
-                        "time_world_clock": "Checking world clock…",
-                    }.get(name, "Using a live tool…")
-                    try:
-                        result = await _execute_live_tool(name, arguments)
-                        payload = {"ok": True, "tool": name, "result": result}
-                    except Exception as exc:
-                        payload = {"ok": False, "tool": name, "error": str(exc)}
-                else:
-                    tool_id = _tool_id_from_function_name(name)
-                    if tool_id not in AUTOMATION_TOOL_IDS:
-                        candidate = name.replace("_", ".")
-                        if candidate in AUTOMATION_TOOL_IDS:
-                            tool_id = candidate
-                        else:
-                            raise ProviderRequestFailed(f"Unsupported tool '{name}'.")
-                    yield "status", f"Running {tool_id}…"
-                    try:
-                        result = await _execute_automation_tool(tool_id, arguments)
-                        payload = {"ok": True, "tool_id": tool_id, "result": result}
-                    except Exception as exc:
-                        payload = {"ok": False, "tool_id": tool_id, "error": str(exc)}
-                safe_messages.append({
-                    "role": "tool",
-                    "tool_call_id": call_id,
-                    "content": json.dumps(payload, ensure_ascii=False, default=str)[:18_000],
-                })
-
-            summary = (
-                "Summarize only the tool results above. If a tool failed, say so clearly. "
-                "Do not invent extra actions or sources. Do not claim you lack access if a tool succeeded."
-            )
-            if spoken:
-                summary += " Answer in 1–3 short spoken sentences. Plain speech only."
-            safe_messages.append({"role": "system", "content": summary})
-            async for text in stream_completion(
-                safe_messages,
-                max_tokens=550 if spoken else None,
-                temperature=0.4 if spoken else 0.5,
-            ):
-                yield "delta", text
-
-        async for event in _stream_with_tool_round(
-            automation_messages,
-            tools,
-            execute_calls=_combined_exec,
-        ):
+        async for event in _desktop_tool_stream(messages, spoken=spoken, live_ok=live_ok):
             yield event
         return
 
-    # Voice calls need low latency: hard-cap tokens and keep temperature steady.
     if mode == "voice":
         async for text in stream_completion(messages, max_tokens=550, temperature=0.4):
             yield "delta", text

@@ -88,10 +88,15 @@ async def complete(messages: list[dict[str, Any]]) -> str:
     return content.strip()
 
 
-async def complete_with_tools(messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
+async def complete_with_tools(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    *,
+    tool_choice: str | dict[str, Any] = "auto",
+) -> dict[str, Any]:
     url, api_key = _endpoint()
     payload = _request_payload(messages, stream=False)
-    payload.update({"tools": tools, "tool_choice": "auto"})
+    payload.update({"tools": tools, "tool_choice": tool_choice})
     data = await _post_json(url, api_key, payload, "tool-selection request")
     try:
         message = data["choices"][0]["message"]

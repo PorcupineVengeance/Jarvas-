@@ -35,12 +35,14 @@ def settings_file() -> Path:
 def load_desktop_settings() -> dict[str, Any]:
     path = settings_file()
     settings = get_settings()
+    # Desktop-first defaults: access on unless the JSON file explicitly disables it.
     defaults = {
-        "computer_control": bool(settings.jarvis_enable_computer_control),
+        "computer_control": True if settings.is_desktop else bool(settings.jarvis_enable_computer_control),
         "live_web": bool(settings.jarvis_enable_live_web),
         "bluetooth": bool(settings.jarvis_enable_bluetooth),
-        "full_device_access": bool(settings.jarvis_enable_full_device_access),
-        "allowed_paths": [str(p) for p in settings.jarvis_allowed_paths.split(",") if p.strip()] or list(DEFAULT_ALLOWED),
+        "full_device_access": True if settings.is_desktop else bool(settings.jarvis_enable_full_device_access),
+        "allowed_paths": [str(p) for p in settings.jarvis_allowed_paths.split(",") if p.strip()]
+        or list(FULL_DEVICE_ALLOWED if settings.is_desktop else DEFAULT_ALLOWED),
     }
     if path.is_file():
         try:
@@ -105,14 +107,31 @@ def save_desktop_settings(
 
 def apply_desktop_settings_on_boot() -> None:
     """Overlay JSON preferences onto process env before first settings read."""
+    sync_desktop_settings_from_disk()
+
+
+def sync_desktop_settings_from_disk() -> dict[str, Any]:
+    """Re-read desktop-settings.json into process env (call every chat turn)."""
     if os.getenv("JARVIS_DESKTOP") != "1":
-        return
+        return {}
     clear_settings_cache()
     data = load_desktop_settings()
-    os.environ["JARVIS_ENABLE_COMPUTER_CONTROL"] = "true" if data.get("computer_control", True) else "false"
-    os.environ["JARVIS_ENABLE_LIVE_WEB"] = "true" if data.get("live_web", True) else "false"
-    os.environ["JARVIS_ENABLE_BLUETOOTH"] = "true" if data.get("bluetooth", False) else "false"
-    os.environ["JARVIS_ENABLE_FULL_DEVICE_ACCESS"] = "true" if data.get("full_device_access", False) else "false"
-    paths = data.get("allowed_paths") or DEFAULT_ALLOWED
+    # Desktop defaults: computer control on; full home access on unless explicitly disabled.
+    computer = bool(data.get("computer_control", True))
+    live_web = bool(data.get("live_web", True))
+    bluetooth = bool(data.get("bluetooth", False))
+    full_device = bool(data.get("full_device_access", True)) if computer else False
+    os.environ["JARVIS_ENABLE_COMPUTER_CONTROL"] = "true" if computer else "false"
+    os.environ["JARVIS_ENABLE_LIVE_WEB"] = "true" if live_web else "false"
+    os.environ["JARVIS_ENABLE_BLUETOOTH"] = "true" if bluetooth else "false"
+    os.environ["JARVIS_ENABLE_FULL_DEVICE_ACCESS"] = "true" if full_device and computer else "false"
+    paths = data.get("allowed_paths") or list(FULL_DEVICE_ALLOWED if full_device else DEFAULT_ALLOWED)
     os.environ["JARVIS_ALLOWED_PATHS"] = ",".join(str(p) for p in paths)
     clear_settings_cache()
+    return {
+        "computer_control": computer,
+        "live_web": live_web,
+        "bluetooth": bluetooth,
+        "full_device_access": full_device and computer,
+        "allowed_paths": list(paths),
+    }

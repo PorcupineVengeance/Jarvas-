@@ -40,27 +40,59 @@ function ensureUserDirs() {
       paths.desktopSettings,
       JSON.stringify(
         {
+          settings_version: 3,
           computer_control: true,
           live_web: true,
           bluetooth: false,
-          full_device_access: false,
-          allowed_paths: ['~/Desktop', '~/Documents', '~/Downloads'],
+          full_device_access: true,
+          allowed_paths: ['~', '~/Desktop', '~/Documents', '~/Downloads', '~/Pictures', '~/Music', '~/Movies'],
         },
         null,
         2,
       ),
       'utf8',
     );
+  } else {
+    migrateDesktopSettings(paths.desktopSettings);
   }
   return paths;
+}
+
+function migrateDesktopSettings(filePath) {
+  try {
+    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    if (!data || typeof data !== 'object') return;
+    if (Number(data.settings_version) >= 3) return;
+    // v3: computer control + full home access on by default so Desktop stops falsely refusing.
+    data.computer_control = data.computer_control !== false;
+    data.live_web = data.live_web !== false;
+    data.full_device_access = data.computer_control ? true : false;
+    data.bluetooth = data.bluetooth === true;
+    const paths = Array.isArray(data.allowed_paths) ? data.allowed_paths : [];
+    for (const item of ['~', '~/Desktop', '~/Documents', '~/Downloads', '~/Pictures', '~/Music', '~/Movies']) {
+      if (!paths.includes(item)) paths.push(item);
+    }
+    data.allowed_paths = paths;
+    data.settings_version = 3;
+    fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
+  } catch {
+    // Keep existing file if migration fails.
+  }
 }
 
 function readDesktopSettings() {
   const { desktopSettings } = userDataPaths();
   try {
+    migrateDesktopSettings(desktopSettings);
     return JSON.parse(fs.readFileSync(desktopSettings, 'utf8'));
   } catch {
-    return { computer_control: true, live_web: true, bluetooth: false, full_device_access: false, allowed_paths: ['~/Desktop', '~/Documents', '~/Downloads'] };
+    return {
+      computer_control: true,
+      live_web: true,
+      bluetooth: false,
+      full_device_access: true,
+      allowed_paths: ['~', '~/Desktop', '~/Documents', '~/Downloads', '~/Pictures', '~/Music', '~/Movies'],
+    };
   }
 }
 
@@ -199,7 +231,7 @@ function sidecarEnv(paths, port) {
   const computer = settings.computer_control !== false;
   const liveWeb = settings.live_web !== false;
   const bluetooth = settings.bluetooth === true;
-  const fullDevice = settings.full_device_access === true;
+  const fullDevice = settings.full_device_access !== false;
   const frontendDir = app.isPackaged
     ? resourcePath('frontend')
     : path.join(projectRoot(), 'frontend', 'dist');

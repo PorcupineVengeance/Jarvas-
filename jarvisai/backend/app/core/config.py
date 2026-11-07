@@ -56,14 +56,15 @@ class Settings(BaseSettings):
     supabase_anon_key: str | None = Field(default=None, repr=False)
     supabase_service_role_key: str | None = Field(default=None, repr=False)
     jarvis_storage_dir: str = "./storage"
-    jarvis_enable_computer_control: bool = False
+    # Desktop Electron overlays these from desktop-settings.json; defaults favor access.
+    jarvis_enable_computer_control: bool = True
     # Live web search, page fetch, and weather (Open-Meteo). User can disable in Settings.
     jarvis_enable_live_web: bool = True
     # Bluetooth list/connect/disconnect for paired accessories (Desktop only).
     jarvis_enable_bluetooth: bool = False
     # When true (Desktop), allow the whole user home folder + settings/storage tools.
-    jarvis_enable_full_device_access: bool = False
-    jarvis_allowed_paths: str = "~/Desktop,~/Documents,~/Downloads"
+    jarvis_enable_full_device_access: bool = True
+    jarvis_allowed_paths: str = "~,~/Desktop,~/Documents,~/Downloads,~/Pictures,~/Music,~/Movies"
     jarvis_wake_word_enabled: bool = False
     jarvis_continuous_listening: bool = False
     jarvis_desktop: bool = False
