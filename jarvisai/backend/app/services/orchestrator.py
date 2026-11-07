@@ -4,7 +4,13 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from app.core.config import get_settings
-from app.core.permissions import SENSITIVE_ACTIONS, bluetooth_control_enabled, computer_control_enabled, live_web_enabled
+from app.core.permissions import (
+    SENSITIVE_ACTIONS,
+    bluetooth_control_enabled,
+    computer_control_enabled,
+    full_device_access_enabled,
+    live_web_enabled,
+)
 from app.services.llm import ProviderRequestFailed, complete_with_tools, stream_completion
 from app.services.web_research import search_web
 
@@ -86,23 +92,34 @@ def _research_guidance(messages: list[dict[str, Any]], configured: bool, *, spok
     return result
 
 
-def _automation_guidance(messages: list[dict[str, Any]], enabled: bool) -> list[dict[str, Any]]:
+def _automation_guidance(messages: list[dict[str, Any]], enabled: bool, *, spoken: bool = False) -> list[dict[str, Any]]:
     result = list(messages)
     if enabled:
+        full = full_device_access_enabled()
+        scope = (
+            "Full device access is ON: files anywhere under the user's home folder are authorized, "
+            "plus storage reports and system settings. Do not refuse home-folder file access."
+            if full
+            else "Full device access is off: only the allowed folder list is in scope. "
+            "If a path is blocked, say they can enable Full device access in Settings."
+        )
         instruction = (
-            "You are running inside JARVIS Desktop with permissioned computer control. "
+            "You are running inside JARVIS Desktop with computer control ENABLED. "
+            "Never say you are unable to access the computer, files, storage, or settings when a matching tool exists — call the tool. "
             "When the user asks to open an app, website, folder, search in the browser, take a screenshot, "
-            "check storage/disk space, open system settings, or list/find/read files in allowed folders, call the matching tool. "
+            "check storage/disk space, open system settings, control the laptop, or list/find/read files, call the matching tool immediately. "
+            "If they ask whether you have access or to 'use my computer', call computer_device_access first, then help with the next concrete action. "
             "computer_storage reports real disk usage; computer_open_settings opens OS Settings (storage/privacy/etc). "
-            "computer_device_access summarizes current permissions. "
             "browser_search opens a real web search page in their browser (DuckDuckGo by default). "
-            "With Full device access enabled, files under the user home folder are in scope; otherwise only listed folders. "
-            "files_list / files_find / files_read only work inside authorized paths. "
+            f"{scope} "
+            "files_list / files_find / files_read work inside authorized paths. "
             "For Bluetooth headphones/speakers/keyboards: use bluetooth_list, bluetooth_connect, or bluetooth_disconnect when Bluetooth permission is on. "
             "Only use tools for actions the user clearly requested. "
             "After tools run, briefly confirm what happened using the tool results. "
             "Never claim you controlled the computer, files, or Bluetooth unless a tool result confirms it."
         )
+        if spoken:
+            instruction += " Keep the final spoken answer to 1–3 short sentences. Plain speech only."
     else:
         instruction = (
             "Computer control is disabled. Do not claim you opened apps, folders, or took screenshots. "
@@ -432,7 +449,12 @@ async def _run_live_tools(
         yield "delta", text
 
 
-async def _run_automation_tools(calls: list[Any], safe_messages: list[dict[str, Any]]) -> AsyncIterator[tuple[str, str]]:
+async def _run_automation_tools(
+    calls: list[Any],
+    safe_messages: list[dict[str, Any]],
+    *,
+    spoken: bool = False,
+) -> AsyncIterator[tuple[str, str]]:
     for call in calls:
         function = call.get("function") if isinstance(call, dict) else None
         name = function.get("name") if isinstance(function, dict) else None
@@ -462,11 +484,18 @@ async def _run_automation_tools(calls: list[Any], safe_messages: list[dict[str, 
             payload = {"ok": False, "tool_id": tool_id, "error": str(exc)}
         safe_messages.append({"role": "tool", "tool_call_id": call_id, "content": json.dumps(payload, ensure_ascii=False, default=str)[:12_000]})
 
-    safe_messages.append({
-        "role": "system",
-        "content": "Summarize only the tool results above. If a tool failed, say so clearly. Do not invent additional computer actions.",
-    })
-    async for text in stream_completion(safe_messages):
+    summary = (
+        "Summarize only the tool results above. If a tool failed, say so clearly. "
+        "Do not invent additional computer actions. Do not claim you lack access if a tool succeeded."
+    )
+    if spoken:
+        summary += " Answer in 1–3 short spoken sentences. Plain speech only."
+    safe_messages.append({"role": "system", "content": summary})
+    async for text in stream_completion(
+        safe_messages,
+        max_tokens=550 if spoken else None,
+        temperature=0.4 if spoken else 0.5,
+    ):
         yield "delta", text
 
 
@@ -546,7 +575,7 @@ async def orchestrated_stream(
         computer_on = computer_control_enabled()
         bluetooth_on = bluetooth_control_enabled()
         enabled = computer_on or bluetooth_on
-        automation_messages = _automation_guidance(messages, enabled)
+        automation_messages = _automation_guidance(messages, enabled, spoken=spoken)
         # Also allow live answer tools when the user asked to research something while controlling the PC.
         tools = _automation_tool_schemas()
         if not computer_on:
@@ -572,11 +601,19 @@ async def orchestrated_stream(
                 ),
             })
         if not enabled and not live_ok:
-            async for text in stream_completion(automation_messages):
+            async for text in stream_completion(
+                automation_messages,
+                max_tokens=550 if spoken else None,
+                temperature=0.4 if spoken else 0.5,
+            ):
                 yield "delta", text
             return
         if not tools:
-            async for text in stream_completion(automation_messages):
+            async for text in stream_completion(
+                automation_messages,
+                max_tokens=550 if spoken else None,
+                temperature=0.4 if spoken else 0.5,
+            ):
                 yield "delta", text
             return
 
@@ -631,11 +668,18 @@ async def orchestrated_stream(
                     "content": json.dumps(payload, ensure_ascii=False, default=str)[:18_000],
                 })
 
-            safe_messages.append({
-                "role": "system",
-                "content": "Summarize only the tool results above. If a tool failed, say so clearly. Do not invent extra actions or sources.",
-            })
-            async for text in stream_completion(safe_messages):
+            summary = (
+                "Summarize only the tool results above. If a tool failed, say so clearly. "
+                "Do not invent extra actions or sources. Do not claim you lack access if a tool succeeded."
+            )
+            if spoken:
+                summary += " Answer in 1–3 short spoken sentences. Plain speech only."
+            safe_messages.append({"role": "system", "content": summary})
+            async for text in stream_completion(
+                safe_messages,
+                max_tokens=550 if spoken else None,
+                temperature=0.4 if spoken else 0.5,
+            ):
                 yield "delta", text
 
         async for event in _stream_with_tool_round(

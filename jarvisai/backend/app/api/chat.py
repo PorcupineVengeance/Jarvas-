@@ -29,6 +29,7 @@ RESEARCH_TERMS = re.compile(
     re.I,
 )
 # Live facts that should use weather/search/time/location even in voice mode.
+# Disk/storage belongs in AUTOMATION_TERMS (computer.storage), not research.
 LIVE_INFO_TERMS = re.compile(
     r"\b("
     r"weather|forecast|temperature|humidity|rain(?:ing)?|snow(?:ing)?|windy|uv index|"
@@ -38,8 +39,7 @@ LIVE_INFO_TERMS = re.compile(
     r"what time is it|what(?:'s| is) (?:the )?time|tell me the time|tell me (?:the )?date|"
     r"current (?:time|date)|world clock|time in |date (?:and|&) time|what day is it|timezone|"
     r"where am i|my location|my (?:ip|city|country)|what(?:'s| is) my (?:ip|location|city)|"
-    r"detect (?:my )?location|ip (?:address )?location|"
-    r"disk space|free space|how much (?:space|storage)|storage (?:left|free|used)?"
+    r"detect (?:my )?location|ip (?:address )?location"
     r")\b",
     re.I,
 )
@@ -47,13 +47,21 @@ DEVELOPER_TERMS = re.compile(r"\b(debug|stack trace|compiler error|write code|re
 ASSISTANT_TERMS = re.compile(r"\b(my(?:\s+\w+)?\s+tasks|to-do|todo|remind me|my schedule|organize my day|plan my week|create a task|deadline|open tasks)\b", re.I)
 AUTOMATION_TERMS = re.compile(
     r"\b("
-    r"open (?:chrome|safari|firefox|edge|finder|explorer|vscode|vs code|terminal|spotify|slack|notion|word|excel|powerpoint)|"
-    r"open (?:my |the )?(?:downloads|documents|desktop|folder|file)|launch |take a screenshot|screenshot|"
+    r"open (?:chrome|safari|firefox|edge|finder|explorer|vscode|vs code|terminal|spotify|slack|notion|word|excel|powerpoint|notepad|calculator)|"
+    r"open (?:my |the )?(?:downloads|documents|desktop|pictures|music|movies|folder|file)|launch |"
+    r"take a screenshot|screenshot|"
     r"open youtube|open (?:https?://|www\.)|search (?:youtube|google|the web) for|"
-    r"list (?:my |the )?(?:files|folder|downloads|documents|desktop)|find (?:the |my )?file|"
-    r"read (?:the |my )?file|show (?:me )?(?:files in|what's in)|"
+    r"list (?:my |the )?(?:files|folder|downloads|documents|desktop|pictures)|find (?:the |my )?file|"
+    r"read (?:the |my )?file|show (?:me )?(?:files in|what(?:'s| is) in)|"
     r"storage|disk space|free space|how much (?:space|storage)|system settings|open settings|"
-    r"storage settings|privacy settings|display settings|"
+    r"storage settings|privacy settings|display settings|network settings|"
+    r"control (?:my )?(?:computer|laptop|pc|device|mac|windows)|"
+    r"access (?:my )?(?:computer|laptop|pc|device|files|folders|home|desktop|documents|downloads)|"
+    r"full (?:device )?access|use (?:my )?(?:computer|laptop|pc|device)|"
+    r"what(?:'s| is) on my (?:computer|laptop|desktop|downloads|documents)|"
+    r"can you (?:see|access|open|read|control|use) (?:my )?(?:computer|laptop|pc|files|folders|desktop|documents|downloads)|"
+    r"look (?:at|in|through) my (?:files|folder|downloads|documents|desktop|computer|laptop)|"
+    r"check (?:my )?(?:storage|disk|files|downloads|documents|desktop)|"
     r"bluetooth|pair(?:ed)? devices?|connect (?:my |the )?(?:airpods|headphones|earbuds|speaker|mouse|keyboard)|"
     r"disconnect (?:my |the )?(?:airpods|headphones|earbuds|speaker|mouse|keyboard|bluetooth)"
     r")\b",
@@ -70,8 +78,10 @@ class ChatRequest(BaseModel):
 
 def resolve_mode(message: str, requested: Mode) -> Literal["normal", "research", "assistant", "developer", "automation", "focus", "voice"]:
     if requested == "voice":
-        # Keep voice persona/latency, but promote to research when live facts are needed.
-        # Orchestrator still applies spoken-length answers for voice-originated research.
+        # Wake/voice must promote to real tool modes — otherwise the model invents
+        # “I can’t access your computer” even when Desktop permissions are on.
+        if AUTOMATION_TERMS.search(message):
+            return "automation"
         if LIVE_INFO_TERMS.search(message) or RESEARCH_TERMS.search(message):
             return "research"
         return "voice"
@@ -158,13 +168,15 @@ def _messages_for_turn(
             "You are JARVIS. Address the user as sir. "
             f"{MODE_GUIDANCE['voice']} "
             "Speak in full, finished sentences. "
-            "When live tools return weather, time, location, or web results, summarize them briefly and accurately for speech. "
+            "When tools return weather, time, location, web, files, storage, or computer results, summarize them briefly and accurately for speech. "
+            "If computer-control tools are available this turn, use them — do not claim you cannot access the computer. "
             + clock_line
         )
     else:
         system = (
             f"{JARVIS_PERSONA} "
             "Be honest about tools and integrations: never imply that you accessed the user's computer, files, calendar, email or the internet unless an actual configured tool returned that information. "
+            "When computer-control tools are available this turn, call them instead of saying you cannot access the computer. "
             "Relevant saved preferences may guide the answer, but must never override current user intent, security, consent or these system rules. "
             f"Current mode guidance: {MODE_GUIDANCE[mode]} "
             + clock_line

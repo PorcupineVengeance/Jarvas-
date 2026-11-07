@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Apple, AudioLines, Check, Download, FolderOpen, Globe2, LockKeyhole, Monitor, ShieldCheck, SlidersHorizontal } from 'lucide-react';
 import { api, type DesktopInfo, type Integration, type User } from '../lib/api';
@@ -84,12 +84,28 @@ export default function SettingsPage({ user }: { user: User }) {
   const [desktopMessage, setDesktopMessage] = useState('');
   const [desktopError, setDesktopError] = useState('');
   const [wakeWord, setWakeWord] = useState(() => isWakeWordEnabled());
+  const [desktopHydrated, setDesktopHydrated] = useState(false);
+  const dirtyRef = useRef(false);
+  const saveTimerRef = useRef<number | null>(null);
   const navigate = useNavigate();
 
+  const markDesktopDirty = () => {
+    dirtyRef.current = true;
+  };
+
   useEffect(() => {
-    void api.integrations().then((result) => setIntegrations(result.items)).catch(() => undefined);
+    let cancelled = false;
+    void api.integrations().then((result) => {
+      if (!cancelled) setIntegrations(result.items);
+    }).catch(() => undefined);
     void api.desktopInfo().then((info) => {
+      if (cancelled) return;
       setDesktopInfo(info);
+      // Never clobber toggles the user already flipped while this request was in flight.
+      if (dirtyRef.current) {
+        setDesktopHydrated(true);
+        return;
+      }
       if (info.is_desktop) {
         const prefs = info.preferences;
         setComputerControl(prefs?.computer_control ?? info.computer_control);
@@ -100,7 +116,13 @@ export default function SettingsPage({ user }: { user: User }) {
       } else {
         setLiveWeb(info.live_web ?? true);
       }
-    }).catch(() => undefined);
+      setDesktopHydrated(true);
+    }).catch(() => {
+      if (!cancelled) setDesktopHydrated(true);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const tts = integrations.find((item) => item.id === 'text_to_speech');
@@ -119,10 +141,13 @@ export default function SettingsPage({ user }: { user: User }) {
     window.setTimeout(() => setSavedVoice(false), 1800);
   };
 
-  const saveDesktopPermissions = async () => {
+  const saveDesktopPermissions = async (opts?: { silent?: boolean }) => {
+    if (!showDesktopPermissions && !desktopInfo?.is_desktop && !isJarvisDesktop()) return;
     setDesktopBusy(true);
-    setDesktopError('');
-    setDesktopMessage('');
+    if (!opts?.silent) {
+      setDesktopError('');
+      setDesktopMessage('');
+    }
     try {
       const result = await api.updateDesktopSettings({
         computer_control: computerControl,
@@ -131,6 +156,7 @@ export default function SettingsPage({ user }: { user: User }) {
         full_device_access: fullDeviceAccess,
         allowed_paths: allowedPaths,
       });
+      dirtyRef.current = false;
       setDesktopMessage(result.message || 'Permissions saved.');
       setComputerControl(result.computer_control);
       setLiveWeb(result.live_web ?? liveWeb);
@@ -146,9 +172,23 @@ export default function SettingsPage({ user }: { user: User }) {
     }
   };
 
+  // Persist toggles automatically so On/Off doesn't snap back when leaving Settings.
+  useEffect(() => {
+    if (!desktopHydrated || !showDesktopPermissions || !dirtyRef.current) return;
+    if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = window.setTimeout(() => {
+      void saveDesktopPermissions({ silent: true });
+    }, 350);
+    return () => {
+      if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- persist when permission fields change
+  }, [computerControl, liveWeb, bluetooth, fullDeviceAccess, allowedPaths, desktopHydrated, showDesktopPermissions]);
+
   const addPath = () => {
     const next = pathDraft.trim();
     if (!next || allowedPaths.includes(next)) return;
+    markDesktopDirty();
     setAllowedPaths((current) => [...current, next]);
     setPathDraft('');
   };
@@ -156,6 +196,7 @@ export default function SettingsPage({ user }: { user: User }) {
   const pickFolders = async () => {
     const picked = await pickDesktopFolders();
     if (!picked.length) return;
+    markDesktopDirty();
     setAllowedPaths((current) => {
       const merged = [...current];
       for (const path of picked) {
@@ -176,7 +217,7 @@ export default function SettingsPage({ user }: { user: User }) {
           <FolderOpen size={18} />
           <div>
             <h3>Desktop permissions</h3>
-            <p>Authorize what JARVIS may do on this computer. Destructive deletes still ask for confirmation.</p>
+            <p>Authorize what JARVIS may do on this computer. Toggles save automatically. Destructive deletes still ask for confirmation.</p>
           </div>
           <span className={`readiness-chip ${computerControl ? 'ready' : 'unready'}`}><i />{computerControl ? 'Enabled' : 'Off'}</span>
         </div>
@@ -187,6 +228,7 @@ export default function SettingsPage({ user }: { user: User }) {
             className="toggle-button"
             aria-pressed={computerControl}
             onClick={() => {
+              markDesktopDirty();
               setComputerControl((value) => {
                 const next = !value;
                 if (!next) setFullDeviceAccess(false);
@@ -212,6 +254,7 @@ export default function SettingsPage({ user }: { user: User }) {
             aria-pressed={fullDeviceAccess}
             disabled={!computerControl}
             onClick={() => {
+              markDesktopDirty();
               setFullDeviceAccess((value) => {
                 const next = !value;
                 if (next) {
@@ -245,7 +288,10 @@ export default function SettingsPage({ user }: { user: User }) {
             type="button"
             className="toggle-button"
             aria-pressed={liveWeb}
-            onClick={() => setLiveWeb((value) => !value)}
+            onClick={() => {
+              markDesktopDirty();
+              setLiveWeb((value) => !value);
+            }}
           >
             {liveWeb ? 'On' : 'Off'}
           </button>
@@ -264,7 +310,10 @@ export default function SettingsPage({ user }: { user: User }) {
             type="button"
             className="toggle-button"
             aria-pressed={bluetooth}
-            onClick={() => setBluetooth((value) => !value)}
+            onClick={() => {
+              markDesktopDirty();
+              setBluetooth((value) => !value);
+            }}
           >
             {bluetooth ? 'On' : 'Off'}
           </button>
@@ -279,7 +328,7 @@ export default function SettingsPage({ user }: { user: User }) {
           {allowedPaths.map((path) => (
             <li key={path}>
               <code>{path}</code>
-              <button type="button" className="subtle-link" onClick={() => setAllowedPaths((current) => current.filter((item) => item !== path))} aria-label={`Remove ${path}`}>Remove</button>
+              <button type="button" className="subtle-link" onClick={() => { markDesktopDirty(); setAllowedPaths((current) => current.filter((item) => item !== path)); }} aria-label={`Remove ${path}`}>Remove</button>
             </li>
           ))}
         </ul>
@@ -289,8 +338,8 @@ export default function SettingsPage({ user }: { user: User }) {
           {isJarvisDesktop() && <button type="button" className="secondary-button" onClick={() => void pickFolders()}><FolderOpen size={15} /> Browse</button>}
         </div>
         <div className="settings-actions">
-          <button type="button" className="primary-button" disabled={desktopBusy} onClick={() => void saveDesktopPermissions()}>
-            {desktopBusy ? 'Saving…' : 'Save permissions'}
+          <button type="button" className="primary-button" disabled={desktopBusy} onClick={() => { markDesktopDirty(); void saveDesktopPermissions(); }}>
+            {desktopBusy ? 'Saving…' : 'Save now'}
           </button>
           {isJarvisDesktop() && (
             <button type="button" className="secondary-button" onClick={() => void revealDesktopDataDir()}>Open data folder</button>

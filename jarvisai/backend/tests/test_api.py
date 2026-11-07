@@ -122,6 +122,12 @@ def test_file_extraction_and_automatic_modes_are_bounded_and_real():
     assert resolve_mode("Summarize my open tasks", "auto") == "assistant"
     assert resolve_mode("Open Chrome and take a screenshot", "auto") == "automation"
     assert resolve_mode("Make this answer concise", "focus") == "focus"
+    # Voice/wake must promote into tool modes or the model falsely refuses access.
+    assert resolve_mode("Open my Downloads folder", "voice") == "automation"
+    assert resolve_mode("Control my laptop and check storage", "voice") == "automation"
+    assert resolve_mode("Can you access my computer?", "voice") == "automation"
+    assert resolve_mode("What's the weather right now?", "voice") == "research"
+    assert resolve_mode("How much disk space do I have?", "voice") == "automation"
 
 
 def test_desktop_info_reports_web_runtime_without_claiming_control(client):
