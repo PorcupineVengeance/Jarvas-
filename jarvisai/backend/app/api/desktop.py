@@ -12,7 +12,8 @@ class DesktopSettingsUpdate(BaseModel):
     computer_control: bool = True
     live_web: bool = True
     bluetooth: bool = False
-    allowed_paths: list[str] = Field(default_factory=lambda: ["~/Desktop", "~/Documents", "~/Downloads"], max_length=32)
+    full_device_access: bool = False
+    allowed_paths: list[str] = Field(default_factory=lambda: ["~/Desktop", "~/Documents", "~/Downloads"], max_length=64)
 
 
 @router.get("/info")
@@ -25,6 +26,7 @@ def desktop_info(_user: User = Depends(get_current_user)):
         "computer_control": bool(settings.jarvis_enable_computer_control) if settings.is_desktop else False,
         "live_web": bool(settings.jarvis_enable_live_web),
         "bluetooth": bool(settings.jarvis_enable_bluetooth) if settings.is_desktop else False,
+        "full_device_access": bool(settings.jarvis_enable_full_device_access) if settings.is_desktop else False,
         "allowed_paths": [str(p) for p in settings.allowed_paths] if settings.is_desktop else [],
         "preferences": prefs,
         "downloads": {
@@ -34,7 +36,7 @@ def desktop_info(_user: User = Depends(get_current_user)):
             "base": downloads.get("base"),
         },
         "notice": (
-            "Desktop JARVIS can open apps, browse URLs, use live web/weather, and control Bluetooth when you allow those permissions."
+            "Desktop JARVIS can open apps, browse URLs, use live web/weather, manage Bluetooth, and — with Full device access — work across your home folder, storage, and system settings."
             if settings.is_desktop
             else "Install JARVIS Desktop to let the assistant help with apps and files on this computer."
         ),
@@ -54,7 +56,7 @@ def update_settings(body: DesktopSettingsUpdate, _user: User = Depends(get_curre
     settings = get_settings()
     if not settings.is_desktop:
         raise HTTPException(status_code=400, detail="Desktop settings are only available inside JARVIS Desktop.")
-    if len(body.allowed_paths) > 32:
+    if len(body.allowed_paths) > 64:
         raise HTTPException(status_code=422, detail="Too many allowed folders.")
     for path in body.allowed_paths:
         if len(path) > 500 or "\x00" in path:
@@ -64,5 +66,9 @@ def update_settings(body: DesktopSettingsUpdate, _user: User = Depends(get_curre
         allowed_paths=body.allowed_paths,
         live_web=body.live_web,
         bluetooth=body.bluetooth,
+        full_device_access=body.full_device_access,
     )
-    return {"ok": True, **saved, "applied": True, "message": "Permissions updated for this desktop session."}
+    message = "Permissions updated for this desktop session."
+    if saved.get("full_device_access"):
+        message = "Full device access enabled for your user home folder, storage, and system settings."
+    return {"ok": True, **saved, "applied": True, "message": message}

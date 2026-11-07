@@ -76,11 +76,17 @@ def system_status(db: Session = Depends(get_db), user: User = Depends(get_curren
             "text_to_speech": settings.tts_ready,
             "research": settings.research_ready,
             "computer_control": settings.jarvis_enable_computer_control,
+            "live_web": settings.jarvis_enable_live_web,
+            "bluetooth": settings.jarvis_enable_bluetooth,
+            "full_device_access": bool(settings.jarvis_enable_computer_control and settings.jarvis_enable_full_device_access),
             "desktop": settings.is_desktop,
         },
         "desktop": {
             "is_desktop": settings.is_desktop,
             "computer_control": settings.jarvis_enable_computer_control,
+            "live_web": settings.jarvis_enable_live_web,
+            "bluetooth": settings.jarvis_enable_bluetooth,
+            "full_device_access": bool(settings.jarvis_enable_computer_control and settings.jarvis_enable_full_device_access),
             "allowed_paths": [str(p) for p in settings.allowed_paths] if settings.is_desktop else [],
             "downloads": {
                 "mac": downloads.get("mac") or None,

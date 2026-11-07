@@ -77,6 +77,7 @@ export default function SettingsPage({ user }: { user: User }) {
   const [computerControl, setComputerControl] = useState(true);
   const [liveWeb, setLiveWeb] = useState(true);
   const [bluetooth, setBluetooth] = useState(false);
+  const [fullDeviceAccess, setFullDeviceAccess] = useState(false);
   const [allowedPaths, setAllowedPaths] = useState<string[]>(DEFAULT_FOLDERS);
   const [pathDraft, setPathDraft] = useState('');
   const [desktopBusy, setDesktopBusy] = useState(false);
@@ -94,6 +95,7 @@ export default function SettingsPage({ user }: { user: User }) {
         setComputerControl(prefs?.computer_control ?? info.computer_control);
         setLiveWeb(prefs?.live_web ?? info.live_web ?? true);
         setBluetooth(prefs?.bluetooth ?? info.bluetooth ?? false);
+        setFullDeviceAccess(prefs?.full_device_access ?? info.full_device_access ?? false);
         setAllowedPaths(prefs?.allowed_paths?.length ? prefs.allowed_paths : info.allowed_paths.length ? info.allowed_paths : DEFAULT_FOLDERS);
       } else {
         setLiveWeb(info.live_web ?? true);
@@ -122,11 +124,18 @@ export default function SettingsPage({ user }: { user: User }) {
     setDesktopError('');
     setDesktopMessage('');
     try {
-      const result = await api.updateDesktopSettings({ computer_control: computerControl, live_web: liveWeb, bluetooth, allowed_paths: allowedPaths });
+      const result = await api.updateDesktopSettings({
+        computer_control: computerControl,
+        live_web: liveWeb,
+        bluetooth,
+        full_device_access: fullDeviceAccess,
+        allowed_paths: allowedPaths,
+      });
       setDesktopMessage(result.message || 'Permissions saved.');
       setComputerControl(result.computer_control);
       setLiveWeb(result.live_web ?? liveWeb);
       setBluetooth(result.bluetooth ?? bluetooth);
+      setFullDeviceAccess(result.full_device_access ?? fullDeviceAccess);
       setAllowedPaths(result.allowed_paths);
       const info = await api.desktopInfo();
       setDesktopInfo(info);
@@ -167,7 +176,7 @@ export default function SettingsPage({ user }: { user: User }) {
           <FolderOpen size={18} />
           <div>
             <h3>Desktop permissions</h3>
-            <p>JARVIS only acts in folders you authorize. Destructive tools still ask for confirmation.</p>
+            <p>Authorize what JARVIS may do on this computer. Destructive deletes still ask for confirmation.</p>
           </div>
           <span className={`readiness-chip ${computerControl ? 'ready' : 'unready'}`}><i />{computerControl ? 'Enabled' : 'Off'}</span>
         </div>
@@ -177,9 +186,50 @@ export default function SettingsPage({ user }: { user: User }) {
             type="button"
             className="toggle-button"
             aria-pressed={computerControl}
-            onClick={() => setComputerControl((value) => !value)}
+            onClick={() => {
+              setComputerControl((value) => {
+                const next = !value;
+                if (!next) setFullDeviceAccess(false);
+                return next;
+              });
+            }}
           >
             {computerControl ? 'On' : 'Off'}
+          </button>
+        </div>
+        <div className="setting-row">
+          <div>
+            <strong>Full device access</strong>
+            <span>
+              {fullDeviceAccess
+                ? 'JARVIS may use your entire user home folder, report storage, and open system settings (privacy, storage, display, etc.). Other users and protected system roots stay blocked.'
+                : 'Off. Turn on for home-wide files, storage reports, and OS settings — required for “control my laptop” style requests.'}
+            </span>
+          </div>
+          <button
+            type="button"
+            className="toggle-button"
+            aria-pressed={fullDeviceAccess}
+            disabled={!computerControl}
+            onClick={() => {
+              setFullDeviceAccess((value) => {
+                const next = !value;
+                if (next) {
+                  setComputerControl(true);
+                  setAllowedPaths((current) => {
+                    const extras = ['~', '~/Desktop', '~/Documents', '~/Downloads', '~/Pictures', '~/Music', '~/Movies'];
+                    const merged = [...current];
+                    for (const item of extras) {
+                      if (!merged.includes(item)) merged.push(item);
+                    }
+                    return merged;
+                  });
+                }
+                return next;
+              });
+            }}
+          >
+            {fullDeviceAccess ? 'On' : 'Off'}
           </button>
         </div>
         <div className="setting-row">
@@ -219,7 +269,12 @@ export default function SettingsPage({ user }: { user: User }) {
             {bluetooth ? 'On' : 'Off'}
           </button>
         </div>
-        <label className="field-label" htmlFor="allowed-path">Allowed folders</label>
+        <label className="field-label" htmlFor="allowed-path">
+          {fullDeviceAccess ? 'Allowed folders (full home already included)' : 'Allowed folders'}
+        </label>
+        {fullDeviceAccess && (
+          <p className="setting-help">Full device access already covers your user home. Extra folders below are optional.</p>
+        )}
         <ul className="allowed-path-list">
           {allowedPaths.map((path) => (
             <li key={path}>
@@ -243,7 +298,7 @@ export default function SettingsPage({ user }: { user: User }) {
         </div>
         {desktopMessage && <p className="setting-help success-text">{desktopMessage}</p>}
         {desktopError && <p className="error-text">{desktopError}</p>}
-        <div className="safety-note"><ShieldCheck size={15} /><span>Hosted web JARVIS never controls your laptop. Only this desktop app can, and only inside the folders listed here.</span></div>
+        <div className="safety-note"><ShieldCheck size={15} /><span>Hosted web JARVIS never controls your laptop. Only this desktop app can. Full device access covers your user home — not other accounts or silent system-wide root control. Deletes still need confirmation.</span></div>
       </section>
     )}
 
@@ -263,8 +318,8 @@ export default function SettingsPage({ user }: { user: User }) {
           <strong>Hey / Yo JARVIS wake words</strong>
           <span>
             {wakeWord
-              ? 'Listening for “Hey JARVIS” or “Yo JARVIS”. Say a request after the wake word and JARVIS answers immediately.'
-              : 'Off for privacy. Turn on to wake JARVIS with “Hey JARVIS” or “Yo JARVIS”.'}
+              ? 'Always listens in the background (even when the window is in the tray). Say “Hey JARVIS” or “Yo JARVIS” to come online. Say “sign off”, “go off”, or “go offline” to return to standby until you call him again.'
+              : 'Off for privacy. Turn on to wake JARVIS with “Hey JARVIS” or “Yo JARVIS” from standby.'}
             {wake?.configured ? ' Server flag is also enabled.' : ''}
           </span>
         </div>

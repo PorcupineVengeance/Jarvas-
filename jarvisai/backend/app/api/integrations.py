@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends
 from app.api.dependencies import get_current_user
 from app.core.config import get_settings
-from app.core.permissions import bluetooth_control_enabled, live_web_enabled
+from app.core.permissions import bluetooth_control_enabled, full_device_access_enabled, live_web_enabled
 from app.models import User
 from app.services import calendar as calendar_service
 from app.services import email as email_service
@@ -38,7 +38,21 @@ def integrations(_user: User = Depends(get_current_user)):
             "name": "Live weather",
             "configured": live,
             "status": "connected" if live else "permission_required",
-            "detail": "Open-Meteo current conditions and short forecast." if live else "Enable Live web & weather in Settings.",
+            "detail": "Open-Meteo current conditions and short forecast (supports auto IP location)." if live else "Enable Live web & weather in Settings.",
+        },
+        {
+            "id": "location",
+            "name": "IP location",
+            "configured": live,
+            "status": "connected" if live else "permission_required",
+            "detail": "Approximate city/region from this device's public IP." if live else "Enable Live web & weather in Settings.",
+        },
+        {
+            "id": "world_clock",
+            "name": "Date, time & world clock",
+            "configured": True,
+            "status": "connected",
+            "detail": "Accurate OS clock plus multi-city world clock (DST-aware).",
         },
         {"id": "calendar", "name": "Calendar", "configured": calendar_service.is_ready(), "status": "connected" if calendar_service.is_ready() else "unconfigured", "detail": calendar_service.provider_status()["detail"]},
         {"id": "email", "name": "Email", "configured": email_service.is_ready(), "status": "connected" if email_service.is_ready() else "unconfigured", "detail": email_service.provider_status()["detail"]},
@@ -48,13 +62,28 @@ def integrations(_user: User = Depends(get_current_user)):
             "configured": settings.jarvis_enable_computer_control,
             "status": "connected" if settings.jarvis_enable_computer_control else "permission_required",
             "detail": (
-                "Desktop automation enabled for authorized folders and apps."
+                (
+                    "Full device access: home folder, storage report, and system settings."
+                    if full_device_access_enabled()
+                    else "Desktop automation enabled for authorized folders and apps."
+                )
                 if settings.jarvis_enable_computer_control
                 else (
                     "Enable computer control in Settings → Desktop permissions."
                     if settings.is_desktop
                     else "Install JARVIS Desktop (or set JARVIS_ENABLE_COMPUTER_CONTROL=true on a trusted local machine)."
                 )
+            ),
+        },
+        {
+            "id": "full_device_access",
+            "name": "Full device access",
+            "configured": full_device_access_enabled(),
+            "status": "connected" if full_device_access_enabled() else "permission_required",
+            "detail": (
+                "Home-wide files, storage metrics, and OS settings are available."
+                if full_device_access_enabled()
+                else "Enable Full device access under Settings → Desktop permissions (requires Computer control)."
             ),
         },
         {

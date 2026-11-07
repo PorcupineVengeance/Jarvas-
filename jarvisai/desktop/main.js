@@ -1,9 +1,14 @@
-const { app, BrowserWindow, Tray, Menu, nativeImage, dialog, shell, ipcMain, session, systemPreferences } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, dialog, shell, ipcMain, session, systemPreferences, powerSaveBlocker } = require('electron');
 const { spawn, execFile } = require('child_process');
 const fs = require('fs');
 const http = require('http');
 const net = require('net');
 const path = require('path');
+
+// Keep wake-word listening alive while the window is hidden to the tray.
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
+app.commandLine.appendSwitch('disable-background-timer-throttling');
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 
 const isDev = process.argv.includes('--dev') || !app.isPackaged;
 let mainWindow = null;
@@ -11,6 +16,7 @@ let tray = null;
 let sidecar = null;
 let sidecarPort = null;
 let quitting = false;
+let powerBlockerId = null;
 
 function userDataPaths() {
   const root = app.getPath('userData');
@@ -37,6 +43,7 @@ function ensureUserDirs() {
           computer_control: true,
           live_web: true,
           bluetooth: false,
+          full_device_access: false,
           allowed_paths: ['~/Desktop', '~/Documents', '~/Downloads'],
         },
         null,
@@ -53,7 +60,7 @@ function readDesktopSettings() {
   try {
     return JSON.parse(fs.readFileSync(desktopSettings, 'utf8'));
   } catch {
-    return { computer_control: true, live_web: true, bluetooth: false, allowed_paths: ['~/Desktop', '~/Documents', '~/Downloads'] };
+    return { computer_control: true, live_web: true, bluetooth: false, full_device_access: false, allowed_paths: ['~/Desktop', '~/Documents', '~/Downloads'] };
   }
 }
 
@@ -140,6 +147,7 @@ function sidecarEnv(paths, port) {
   const computer = settings.computer_control !== false;
   const liveWeb = settings.live_web !== false;
   const bluetooth = settings.bluetooth === true;
+  const fullDevice = settings.full_device_access === true;
   const frontendDir = app.isPackaged
     ? resourcePath('frontend')
     : path.join(projectRoot(), 'frontend', 'dist');
@@ -149,6 +157,7 @@ function sidecarEnv(paths, port) {
     JARVIS_ENABLE_COMPUTER_CONTROL: computer ? 'true' : 'false',
     JARVIS_ENABLE_LIVE_WEB: liveWeb ? 'true' : 'false',
     JARVIS_ENABLE_BLUETOOTH: bluetooth ? 'true' : 'false',
+    JARVIS_ENABLE_FULL_DEVICE_ACCESS: fullDevice && computer ? 'true' : 'false',
     JARVIS_ALLOWED_PATHS: allowed,
     JARVIS_STORAGE_DIR: paths.storage,
     DATABASE_URL: `sqlite:///${path.join(paths.data, 'jarvis.db')}`,
@@ -323,6 +332,7 @@ function createWindow(port) {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      backgroundThrottling: false,
     },
   });
 
@@ -333,6 +343,7 @@ function createWindow(port) {
     mainWindow.webContents.openDevTools({ mode: 'detach' });
   }
 
+  // Closing the window keeps JARVIS in the tray so Hey/Yo still works.
   mainWindow.on('close', (event) => {
     if (!quitting) {
       event.preventDefault();
@@ -391,11 +402,27 @@ function registerIpc() {
     }
     return false;
   });
+
+  // Voice session hooks — do not force the window forward; standby wake works from tray.
+  ipcMain.handle('desktop:assistant-online', async () => {
+    if (tray) tray.setToolTip('JARVIS · online');
+    return true;
+  });
+  ipcMain.handle('desktop:assistant-standby', async () => {
+    if (tray) tray.setToolTip('JARVIS · standby (say Hey JARVIS)');
+    return true;
+  });
 }
 
 app.whenReady().then(async () => {
   try {
     allowMediaPermissions();
+    // Keep timers/mic wake loop alive while hidden.
+    try {
+      powerBlockerId = powerSaveBlocker.start('prevent-app-suspension');
+    } catch (err) {
+      console.warn('[desktop] powerSaveBlocker unavailable', err);
+    }
     // Don't block backend startup on the mic prompt — voice can request it later.
     void ensureMicrophoneAccess().then((micOk) => {
       if (!micOk && process.platform === 'darwin') {
@@ -411,6 +438,7 @@ app.whenReady().then(async () => {
     const port = await startSidecar();
     createTray();
     createWindow(port);
+    if (tray) tray.setToolTip('JARVIS · standby (say Hey JARVIS)');
   } catch (err) {
     console.error(err);
     dialog.showErrorBox('JARVIS failed to start', err instanceof Error ? err.message : String(err));
@@ -421,6 +449,10 @@ app.whenReady().then(async () => {
 
 app.on('before-quit', () => {
   quitting = true;
+  if (powerBlockerId != null && powerSaveBlocker.isStarted(powerBlockerId)) {
+    try { powerSaveBlocker.stop(powerBlockerId); } catch { /* ignore */ }
+  }
+  powerBlockerId = null;
   stopSidecar();
 });
 

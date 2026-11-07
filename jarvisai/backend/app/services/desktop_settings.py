@@ -11,6 +11,15 @@ from app.core.config import clear_settings_cache, get_settings
 
 
 DEFAULT_ALLOWED = ["~/Desktop", "~/Documents", "~/Downloads"]
+FULL_DEVICE_ALLOWED = [
+    "~",
+    "~/Desktop",
+    "~/Documents",
+    "~/Downloads",
+    "~/Pictures",
+    "~/Music",
+    "~/Movies",
+]
 
 
 def settings_file() -> Path:
@@ -30,6 +39,7 @@ def load_desktop_settings() -> dict[str, Any]:
         "computer_control": bool(settings.jarvis_enable_computer_control),
         "live_web": bool(settings.jarvis_enable_live_web),
         "bluetooth": bool(settings.jarvis_enable_bluetooth),
+        "full_device_access": bool(settings.jarvis_enable_full_device_access),
         "allowed_paths": [str(p) for p in settings.jarvis_allowed_paths.split(",") if p.strip()] or list(DEFAULT_ALLOWED),
     }
     if path.is_file():
@@ -40,6 +50,7 @@ def load_desktop_settings() -> dict[str, Any]:
                     "computer_control": bool(data.get("computer_control", defaults["computer_control"])),
                     "live_web": bool(data.get("live_web", defaults["live_web"])),
                     "bluetooth": bool(data.get("bluetooth", defaults["bluetooth"])),
+                    "full_device_access": bool(data.get("full_device_access", defaults["full_device_access"])),
                     "allowed_paths": list(data.get("allowed_paths") or defaults["allowed_paths"]),
                 }
         except (OSError, json.JSONDecodeError, TypeError):
@@ -53,6 +64,7 @@ def save_desktop_settings(
     allowed_paths: list[str],
     live_web: bool = True,
     bluetooth: bool = False,
+    full_device_access: bool = False,
 ) -> dict[str, Any]:
     cleaned: list[str] = []
     seen: set[str] = set()
@@ -62,12 +74,19 @@ def save_desktop_settings(
             continue
         seen.add(raw)
         cleaned.append(raw)
+    if full_device_access:
+        # Ensure home-wide roots are present when full access is on.
+        for item in FULL_DEVICE_ALLOWED:
+            if item not in seen:
+                cleaned.append(item)
+                seen.add(item)
     if not cleaned:
         cleaned = list(DEFAULT_ALLOWED)
     payload = {
         "computer_control": bool(computer_control),
         "live_web": bool(live_web),
         "bluetooth": bool(bluetooth),
+        "full_device_access": bool(full_device_access and computer_control),
         "allowed_paths": cleaned,
     }
     path = settings_file()
@@ -78,6 +97,7 @@ def save_desktop_settings(
     os.environ["JARVIS_ENABLE_COMPUTER_CONTROL"] = "true" if computer_control else "false"
     os.environ["JARVIS_ENABLE_LIVE_WEB"] = "true" if live_web else "false"
     os.environ["JARVIS_ENABLE_BLUETOOTH"] = "true" if bluetooth else "false"
+    os.environ["JARVIS_ENABLE_FULL_DEVICE_ACCESS"] = "true" if payload["full_device_access"] else "false"
     os.environ["JARVIS_ALLOWED_PATHS"] = ",".join(cleaned)
     clear_settings_cache()
     return payload
@@ -92,6 +112,7 @@ def apply_desktop_settings_on_boot() -> None:
     os.environ["JARVIS_ENABLE_COMPUTER_CONTROL"] = "true" if data.get("computer_control", True) else "false"
     os.environ["JARVIS_ENABLE_LIVE_WEB"] = "true" if data.get("live_web", True) else "false"
     os.environ["JARVIS_ENABLE_BLUETOOTH"] = "true" if data.get("bluetooth", False) else "false"
+    os.environ["JARVIS_ENABLE_FULL_DEVICE_ACCESS"] = "true" if data.get("full_device_access", False) else "false"
     paths = data.get("allowed_paths") or DEFAULT_ALLOWED
     os.environ["JARVIS_ALLOWED_PATHS"] = ",".join(str(p) for p in paths)
     clear_settings_cache()

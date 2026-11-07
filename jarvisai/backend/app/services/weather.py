@@ -1,4 +1,4 @@
-"""Live weather via Open-Meteo (no API key)."""
+"""Live weather via Open-Meteo (no API key). Supports city name or auto IP location."""
 
 from __future__ import annotations
 
@@ -30,6 +30,8 @@ WMO_CODES: dict[int, str] = {
     99: "thunderstorm with heavy hail",
 }
 
+AUTO_LOCATION_TOKENS = {"", "here", "auto", "my location", "near me", "current location", "local"}
+
 
 class WeatherError(RuntimeError):
     pass
@@ -41,34 +43,23 @@ def _describe(code: int | None) -> str:
     return WMO_CODES.get(int(code), f"weather code {code}")
 
 
-async def lookup_weather(location: str, units: str = "metric") -> dict[str, Any]:
-    place = (location or "").strip()
-    if not place or len(place) > 120:
-        raise WeatherError("Provide a city or place name (1–120 characters).")
+async def _forecast_at(
+    *,
+    lat: float,
+    lon: float,
+    label: str,
+    units: str,
+    location_source: str,
+) -> dict[str, Any]:
     unit = (units or "metric").lower().strip()
     if unit not in {"metric", "imperial"}:
         unit = "metric"
     temp_unit = "fahrenheit" if unit == "imperial" else "celsius"
     wind_unit = "mph" if unit == "imperial" else "kmh"
-
     headers = {"User-Agent": "JARVIS-Weather/1.0"}
+
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(20.0), follow_redirects=True, headers=headers) as client:
-            geo = await client.get(
-                "https://geocoding-api.open-meteo.com/v1/search",
-                params={"name": place, "count": 1, "language": "en", "format": "json"},
-            )
-            if geo.is_error:
-                raise WeatherError(f"Geocoding failed (HTTP {geo.status_code}).")
-            geo_data = geo.json()
-            results = geo_data.get("results") if isinstance(geo_data, dict) else None
-            if not isinstance(results, list) or not results:
-                raise WeatherError(f"No matching place found for “{place}”.")
-            hit = results[0]
-            lat = hit.get("latitude")
-            lon = hit.get("longitude")
-            if lat is None or lon is None:
-                raise WeatherError("Geocoding returned an incomplete location.")
             forecast = await client.get(
                 "https://api.open-meteo.com/v1/forecast",
                 params={
@@ -106,17 +97,13 @@ async def lookup_weather(location: str, units: str = "metric") -> dict[str, Any]
             "precip_probability": (daily.get("precipitation_probability_max") or [None])[index] if isinstance(daily.get("precipitation_probability_max"), list) else None,
         })
 
-    label_parts = [str(hit.get("name") or place)]
-    if hit.get("admin1"):
-        label_parts.append(str(hit["admin1"]))
-    if hit.get("country"):
-        label_parts.append(str(hit["country"]))
-
     return {
         "provider": "open-meteo",
-        "location": ", ".join(label_parts),
+        "location": label,
+        "location_source": location_source,
         "latitude": lat,
         "longitude": lon,
+        "timezone": data.get("timezone") if isinstance(data, dict) else None,
         "units": unit,
         "current": {
             "temperature": current.get("temperature_2m"),
@@ -129,3 +116,71 @@ async def lookup_weather(location: str, units: str = "metric") -> dict[str, Any]
         "forecast": days,
         "note": "Live weather from Open-Meteo. Treat as factual tool data.",
     }
+
+
+async def lookup_weather(location: str = "here", units: str = "metric") -> dict[str, Any]:
+    place = (location or "").strip()
+    if len(place) > 120:
+        raise WeatherError("Provide a city or place name (1–120 characters), or 'here' for IP-based local weather.")
+
+    # Auto / here → public IP geolocation
+    if place.lower() in AUTO_LOCATION_TOKENS:
+        from app.services.geolocation import GeolocationError, resolve_ip_location
+
+        try:
+            geo = await resolve_ip_location()
+        except GeolocationError as exc:
+            raise WeatherError(str(exc)) from exc
+        lat = geo.get("latitude")
+        lon = geo.get("longitude")
+        if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+            raise WeatherError("IP location did not include coordinates for weather.")
+        label = str(geo.get("label") or "Your area")
+        result = await _forecast_at(
+            lat=float(lat),
+            lon=float(lon),
+            label=label,
+            units=units,
+            location_source="ip_geolocation",
+        )
+        result["ip_location"] = {
+            "city": geo.get("city"),
+            "region": geo.get("region"),
+            "country": geo.get("country"),
+            "timezone": geo.get("timezone"),
+            "accuracy": geo.get("accuracy"),
+        }
+        return result
+
+    headers = {"User-Agent": "JARVIS-Weather/1.0"}
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(20.0), follow_redirects=True, headers=headers) as client:
+            geo = await client.get(
+                "https://geocoding-api.open-meteo.com/v1/search",
+                params={"name": place, "count": 1, "language": "en", "format": "json"},
+            )
+            if geo.is_error:
+                raise WeatherError(f"Geocoding failed (HTTP {geo.status_code}).")
+            geo_data = geo.json()
+            results = geo_data.get("results") if isinstance(geo_data, dict) else None
+            if not isinstance(results, list) or not results:
+                raise WeatherError(f"No matching place found for “{place}”.")
+            hit = results[0]
+            lat = hit.get("latitude")
+            lon = hit.get("longitude")
+            if lat is None or lon is None:
+                raise WeatherError("Geocoding returned an incomplete location.")
+            label_parts = [str(hit.get("name") or place)]
+            if hit.get("admin1"):
+                label_parts.append(str(hit["admin1"]))
+            if hit.get("country"):
+                label_parts.append(str(hit["country"]))
+            return await _forecast_at(
+                lat=float(lat),
+                lon=float(lon),
+                label=", ".join(label_parts),
+                units=units,
+                location_source="geocoded_place_name",
+            )
+    except httpx.HTTPError as exc:
+        raise WeatherError("Weather service is unreachable right now.") from exc

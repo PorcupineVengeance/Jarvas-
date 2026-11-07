@@ -8,8 +8,9 @@ export type DesktopInfo = {
   computer_control: boolean;
   live_web?: boolean;
   bluetooth?: boolean;
+  full_device_access?: boolean;
   allowed_paths: string[];
-  preferences?: { computer_control: boolean; live_web?: boolean; bluetooth?: boolean; allowed_paths: string[] } | null;
+  preferences?: { computer_control: boolean; live_web?: boolean; bluetooth?: boolean; full_device_access?: boolean; allowed_paths: string[] } | null;
   downloads: { mac: string | null; windows: string | null; configured: boolean; base?: string };
   notice: string;
 };
@@ -25,10 +26,24 @@ export type AppStatus = {
   worker_count: number;
   connected_integrations: string[];
   database: { connected: boolean };
-  providers: { llm: boolean; llm_name: string; transcription: boolean; text_to_speech: boolean; research?: boolean; computer_control?: boolean; desktop?: boolean };
+  providers: {
+    llm: boolean;
+    llm_name: string;
+    transcription: boolean;
+    text_to_speech: boolean;
+    research?: boolean;
+    computer_control?: boolean;
+    live_web?: boolean;
+    bluetooth?: boolean;
+    full_device_access?: boolean;
+    desktop?: boolean;
+  };
   desktop?: {
     is_desktop: boolean;
     computer_control: boolean;
+    live_web?: boolean;
+    bluetooth?: boolean;
+    full_device_access?: boolean;
     allowed_paths: string[];
     downloads: { mac: string | null; windows: string | null; configured: boolean };
   };
@@ -83,9 +98,9 @@ export const api = {
   status: () => request<AppStatus>('/api/system/status'),
   integrations: () => request<{ items: Integration[]; checked_at: string }>('/api/integrations'),
   desktopInfo: () => request<DesktopInfo>('/api/desktop/info'),
-  desktopSettings: () => request<{ computer_control: boolean; live_web?: boolean; bluetooth?: boolean; allowed_paths: string[] }>('/api/desktop/settings'),
-  updateDesktopSettings: (body: { computer_control: boolean; live_web?: boolean; bluetooth?: boolean; allowed_paths: string[] }) =>
-    request<{ ok: boolean; computer_control: boolean; live_web?: boolean; bluetooth?: boolean; allowed_paths: string[]; applied: boolean; message: string }>('/api/desktop/settings', {
+  desktopSettings: () => request<{ computer_control: boolean; live_web?: boolean; bluetooth?: boolean; full_device_access?: boolean; allowed_paths: string[] }>('/api/desktop/settings'),
+  updateDesktopSettings: (body: { computer_control: boolean; live_web?: boolean; bluetooth?: boolean; full_device_access?: boolean; allowed_paths: string[] }) =>
+    request<{ ok: boolean; computer_control: boolean; live_web?: boolean; bluetooth?: boolean; full_device_access?: boolean; allowed_paths: string[]; applied: boolean; message: string }>('/api/desktop/settings', {
       method: 'PUT',
       body: JSON.stringify(body),
     }),

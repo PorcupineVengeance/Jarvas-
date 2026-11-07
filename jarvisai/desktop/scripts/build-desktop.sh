@@ -10,7 +10,17 @@ echo "==> Building frontend"
 (
   cd frontend
   export CI=true
-  corepack prepare pnpm@11.25.0 --activate
+  if command -v corepack >/dev/null 2>&1; then
+    corepack prepare pnpm@11.25.0 --activate
+  elif command -v pnpm >/dev/null 2>&1; then
+    echo "corepack not found; using existing pnpm ($(pnpm -v))"
+  elif command -v npm >/dev/null 2>&1; then
+    echo "corepack not found; installing pnpm via npm"
+    npm install -g pnpm@11.25.0
+  else
+    echo "Need Node.js with npm (or pnpm). Install from https://nodejs.org" >&2
+    exit 1
+  fi
   pnpm install --frozen-lockfile
   pnpm build
 )

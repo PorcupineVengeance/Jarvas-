@@ -80,20 +80,68 @@ def register_all(registry: ToolRegistry) -> None:
     registry.register(Tool(
         id="weather.lookup",
         name="Weather lookup",
-        description="Get live current weather and a short forecast for a city or place via Open-Meteo.",
+        description="Get live current weather and a short forecast. Use location 'here' for auto IP-based local weather, or a city name.",
         permission="research:read",
         write=False,
         category="research",
         input_schema={
             "type": "object",
             "properties": {
-                "location": {"type": "string", "minLength": 1, "maxLength": 120},
+                "location": {"type": "string", "minLength": 1, "maxLength": 120, "description": "City name, or 'here' / 'auto' for this device's approximate IP location"},
                 "units": {"type": "string", "enum": ["metric", "imperial"]},
             },
             "required": ["location"],
             "additionalProperties": False,
         },
         execute=_weather_lookup,
+    ))
+    registry.register(Tool(
+        id="location.ip",
+        name="IP location",
+        description="Resolve this computer's approximate city/region/country/timezone from its public IP.",
+        permission="research:read",
+        write=False,
+        category="research",
+        input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+        execute=_location_ip,
+    ))
+    registry.register(Tool(
+        id="time.now",
+        name="Current date and time",
+        description="Accurate current date and time from the OS clock. Optional timezone or city (e.g. Tokyo, Asia/Dhaka).",
+        permission="system:read",
+        write=False,
+        category="system",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "timezone": {"type": "string", "maxLength": 80, "description": "IANA timezone or city; omit for this computer's local time"},
+            },
+            "additionalProperties": False,
+        },
+        execute=_time_now,
+    ))
+    registry.register(Tool(
+        id="time.world_clock",
+        name="World clock",
+        description="Accurate current times for multiple cities or IANA timezones.",
+        permission="system:read",
+        write=False,
+        category="system",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "places": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1, "maxLength": 80},
+                    "minItems": 1,
+                    "maxItems": 12,
+                },
+            },
+            "required": ["places"],
+            "additionalProperties": False,
+        },
+        execute=_time_world_clock,
     ))
     registry.register(Tool(
         id="system.info",
@@ -126,6 +174,25 @@ def register_all(registry: ToolRegistry) -> None:
         requires_computer=True,
         input_schema={"type": "object", "properties": {"directory": {"type": "string"}, "pattern": {"type": "string"}}, "required": ["directory", "pattern"], "additionalProperties": False},
         execute=_files_find,
+    ))
+    registry.register(Tool(
+        id="files.read",
+        name="Read text file",
+        description="Read a text file inside authorized folders.",
+        permission="files:read",
+        write=False,
+        category="files",
+        requires_computer=True,
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "max_chars": {"type": "integer", "minimum": 200, "maximum": 40_000},
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        execute=_files_read,
     ))
     registry.register(Tool(
         id="files.create_folder",
@@ -203,6 +270,48 @@ def register_all(registry: ToolRegistry) -> None:
         requires_computer=True,
         input_schema={"type": "object", "properties": {}, "additionalProperties": False},
         execute=_screenshot,
+    ))
+    registry.register(Tool(
+        id="computer.storage",
+        name="Storage report",
+        description="Report real disk free/used space and top items in the user home folder.",
+        permission="computer:control",
+        write=False,
+        category="computer",
+        requires_computer=True,
+        input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+        execute=_storage_report,
+    ))
+    registry.register(Tool(
+        id="computer.open_settings",
+        name="Open system settings",
+        description="Open OS Settings/System Settings (needs computer control). Sections: general, storage, network, bluetooth, sound, display, privacy, microphone, notifications, battery, users, wallpaper, datetime, apps.",
+        permission="computer:control",
+        write=True,
+        category="computer",
+        requires_computer=True,
+        input_schema={
+            "type": "object",
+            "properties": {
+                "section": {
+                    "type": "string",
+                    "enum": ["general", "storage", "network", "bluetooth", "sound", "display", "privacy", "microphone", "notifications", "battery", "users", "wallpaper", "datetime", "apps"],
+                },
+            },
+            "additionalProperties": False,
+        },
+        execute=_open_settings,
+    ))
+    registry.register(Tool(
+        id="computer.device_access",
+        name="Device access summary",
+        description="Summarize what folders and device permissions JARVIS currently has on this computer.",
+        permission="computer:control",
+        write=False,
+        category="computer",
+        requires_computer=True,
+        input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+        execute=_device_access,
     ))
     registry.register(Tool(
         id="browser.search",
@@ -327,7 +436,24 @@ async def _weather_lookup(args: dict[str, Any], db: Session, user: User):
     from app.services.weather import lookup_weather
     if not live_web_enabled():
         raise RuntimeError("Live web and weather are disabled in Settings.")
-    return await lookup_weather(str(args["location"]), str(args.get("units") or "metric"))
+    return await lookup_weather(str(args.get("location") or "here"), str(args.get("units") or "metric"))
+
+
+async def _location_ip(args: dict[str, Any], db: Session, user: User):
+    from app.services.geolocation import resolve_ip_location
+    return await resolve_ip_location()
+
+
+def _time_now(args: dict[str, Any], db: Session, user: User):
+    from app.services.world_time import now_in_timezone
+    tz = args.get("timezone")
+    return now_in_timezone(str(tz).strip() if isinstance(tz, str) and tz.strip() else None)
+
+
+def _time_world_clock(args: dict[str, Any], db: Session, user: User):
+    from app.services.world_time import world_clock
+    places = args.get("places") if isinstance(args.get("places"), list) else []
+    return world_clock([str(p) for p in places])
 
 
 def _system_info(args: dict[str, Any], db: Session, user: User):
@@ -352,6 +478,12 @@ def _files_list(args: dict[str, Any], db: Session, user: User):
 def _files_find(args: dict[str, Any], db: Session, user: User):
     from app.services.file_manager import find_files
     return find_files(str(args["directory"]), str(args["pattern"]))
+
+
+def _files_read(args: dict[str, Any], db: Session, user: User):
+    from app.services.file_manager import read_text_file
+    max_chars = int(args.get("max_chars") or 40_000)
+    return read_text_file(str(args["path"]), max_chars=max(200, min(max_chars, 40_000)))
 
 
 def _files_create_folder(args: dict[str, Any], db: Session, user: User):
@@ -387,6 +519,21 @@ def _open_path(args: dict[str, Any], db: Session, user: User):
 def _screenshot(args: dict[str, Any], db: Session, user: User):
     from app.services.computer_control import take_screenshot
     return take_screenshot()
+
+
+def _storage_report(args: dict[str, Any], db: Session, user: User):
+    from app.services.computer_control import storage_report
+    return storage_report()
+
+
+def _open_settings(args: dict[str, Any], db: Session, user: User):
+    from app.services.computer_control import open_system_settings
+    return open_system_settings(str(args.get("section") or "general"))
+
+
+def _device_access(args: dict[str, Any], db: Session, user: User):
+    from app.services.computer_control import device_access_summary
+    return device_access_summary()
 
 
 async def _browser_search(args: dict[str, Any], db: Session, user: User):

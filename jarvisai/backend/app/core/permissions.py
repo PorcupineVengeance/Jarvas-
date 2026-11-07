@@ -27,11 +27,29 @@ def bluetooth_control_enabled() -> bool:
     return bool(get_settings().jarvis_enable_bluetooth)
 
 
+def full_device_access_enabled() -> bool:
+    """User opted in to home-wide files + settings/storage helpers (Desktop)."""
+    settings = get_settings()
+    return bool(settings.jarvis_enable_computer_control and settings.jarvis_enable_full_device_access)
+
+
+def user_home_root() -> Path:
+    return Path.home().resolve()
+
+
 def path_is_allowed(target: str | Path) -> bool:
     try:
         resolved = Path(target).expanduser().resolve()
     except OSError:
         return False
+    # Full device access → entire user home (not other users / system roots).
+    if full_device_access_enabled():
+        home = user_home_root()
+        try:
+            resolved.relative_to(home)
+            return True
+        except ValueError:
+            pass
     allowed = get_settings().allowed_paths
     if not allowed:
         return False

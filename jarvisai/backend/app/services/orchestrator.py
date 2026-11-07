@@ -21,14 +21,42 @@ AUTOMATION_TOOL_IDS = {
     "computer.open_url",
     "computer.open_path",
     "computer.screenshot",
+    "computer.storage",
+    "computer.open_settings",
+    "computer.device_access",
     "browser.search",
     "bluetooth.list",
     "bluetooth.connect",
     "bluetooth.disconnect",
+    "files.list",
+    "files.find",
+    "files.read",
 }
 
-LIVE_TOOL_NAMES = {"research_search", "research_fetch", "weather_lookup"}
+LIVE_TOOL_NAMES = {
+    "research_search",
+    "research_fetch",
+    "weather_lookup",
+    "location_ip",
+    "time_now",
+    "time_world_clock",
+}
 WEATHER_HINT = re.compile(r"\b(weather|forecast|temperature|humidity|rain|snow|windy|uv index|how (?:hot|cold|warm))\b", re.I)
+TIME_HINT = re.compile(
+    r"\b("
+    r"what(?:'s| is) the (?:time|date)|what time is it|what(?:'s| is) (?:the )?time|"
+    r"tell me the time|tell me (?:the )?date|current (?:time|date)|world clock|time in |"
+    r"date (?:and|&) time|what day is it|timezone|o'?clock"
+    r")\b",
+    re.I,
+)
+LOCATION_HINT = re.compile(
+    r"\b("
+    r"where am i|my location|my (?:ip|city|country)|what(?:'s| is) my (?:ip|location|city)|"
+    r"detect (?:my )?location|ip (?:address )?location"
+    r")\b",
+    re.I,
+)
 
 
 def _research_guidance(messages: list[dict[str, Any]], configured: bool, *, spoken: bool = False) -> list[dict[str, Any]]:
@@ -36,8 +64,12 @@ def _research_guidance(messages: list[dict[str, Any]], configured: bool, *, spok
     if configured:
         instruction = (
             "You have permissioned live tools: research_search (web search), research_fetch (read a public page), "
-            "and weather_lookup (current weather / short forecast). "
-            "For weather questions call weather_lookup with a city or place. "
+            "weather_lookup (live weather; use location 'here' when the user means local/auto weather), "
+            "location_ip (approximate city from this device's public IP), "
+            "time_now (accurate OS date/time; optional city/timezone), and time_world_clock (multiple cities). "
+            "For weather with no city given, call weather_lookup with location 'here'. "
+            "For date/time or world clock, always call time_now or time_world_clock — never guess the clock. "
+            "For 'where am I' / IP location, call location_ip. "
             "For other current facts call research_search first; use research_fetch on a promising URL when snippets are thin. "
             "Cite only source names/URLs returned by tools; do not invent facts. "
             "If no tool call occurs, say clearly that live sources were not accessed."
@@ -47,6 +79,7 @@ def _research_guidance(messages: list[dict[str, Any]], configured: bool, *, spok
     else:
         instruction = (
             "Live web and weather are unavailable because the user disabled them or no research provider is ready. "
+            "You may still use time_now / time_world_clock for accurate clock answers. "
             "Do not fabricate search results, citations, URLs, weather, or other current facts."
         )
     result.append({"role": "system", "content": instruction})
@@ -58,12 +91,17 @@ def _automation_guidance(messages: list[dict[str, Any]], enabled: bool) -> list[
     if enabled:
         instruction = (
             "You are running inside JARVIS Desktop with permissioned computer control. "
-            "When the user asks to open an app, website, folder, search in the browser, or take a screenshot, call the matching tool. "
+            "When the user asks to open an app, website, folder, search in the browser, take a screenshot, "
+            "check storage/disk space, open system settings, or list/find/read files in allowed folders, call the matching tool. "
+            "computer_storage reports real disk usage; computer_open_settings opens OS Settings (storage/privacy/etc). "
+            "computer_device_access summarizes current permissions. "
             "browser_search opens a real web search page in their browser (DuckDuckGo by default). "
+            "With Full device access enabled, files under the user home folder are in scope; otherwise only listed folders. "
+            "files_list / files_find / files_read only work inside authorized paths. "
             "For Bluetooth headphones/speakers/keyboards: use bluetooth_list, bluetooth_connect, or bluetooth_disconnect when Bluetooth permission is on. "
             "Only use tools for actions the user clearly requested. "
             "After tools run, briefly confirm what happened using the tool results. "
-            "Never claim you controlled the computer or Bluetooth unless a tool result confirms it."
+            "Never claim you controlled the computer, files, or Bluetooth unless a tool result confirms it."
         )
     else:
         instruction = (
@@ -110,7 +148,7 @@ def _live_tool_schemas() -> list[dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "weather_lookup",
-                "description": "Get live current weather and a short forecast for a city or place via Open-Meteo.",
+                "description": "Get live current weather and a short forecast via Open-Meteo. Use location 'here' for auto IP-based local weather.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -118,6 +156,46 @@ def _live_tool_schemas() -> list[dict[str, Any]]:
                         "units": {"type": "string", "enum": ["metric", "imperial"]},
                     },
                     "required": ["location"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "location_ip",
+                "description": "Resolve this computer's approximate city/region/country/timezone from its public IP address.",
+                "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "time_now",
+                "description": "Accurate current date and time from the OS clock. Optional city or IANA timezone.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"timezone": {"type": "string", "maxLength": 80}},
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "time_world_clock",
+                "description": "Accurate current times for multiple cities or IANA timezones.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "places": {
+                            "type": "array",
+                            "items": {"type": "string", "minLength": 1, "maxLength": 80},
+                            "minItems": 1,
+                            "maxItems": 12,
+                        },
+                    },
+                    "required": ["places"],
                     "additionalProperties": False,
                 },
             },
@@ -175,6 +253,22 @@ async def _execute_automation_tool(tool_id: str, arguments: dict[str, Any]) -> d
     if not computer_control_enabled():
         raise ProviderRequestFailed("Computer control is disabled.")
 
+    if tool_id.startswith("files."):
+        from app.services import file_manager
+
+        if tool_id == "files.list":
+            return file_manager.list_directory(str(arguments.get("path", "")))
+        if tool_id == "files.find":
+            return file_manager.find_files(str(arguments.get("directory", "")), str(arguments.get("pattern", "")))
+        if tool_id == "files.read":
+            max_chars = arguments.get("max_chars", 40_000)
+            try:
+                max_chars_i = int(max_chars)
+            except (TypeError, ValueError):
+                max_chars_i = 40_000
+            return file_manager.read_text_file(str(arguments.get("path", "")), max_chars=max(200, min(max_chars_i, 40_000)))
+        raise ProviderRequestFailed(f"No executor for '{tool_id}'.")
+
     if tool_id == "computer.open_app":
         return computer_control.open_application(str(arguments.get("name", "")))
     if tool_id == "computer.open_url":
@@ -183,6 +277,12 @@ async def _execute_automation_tool(tool_id: str, arguments: dict[str, Any]) -> d
         return computer_control.open_path(str(arguments.get("path", "")))
     if tool_id == "computer.screenshot":
         return computer_control.take_screenshot()
+    if tool_id == "computer.storage":
+        return computer_control.storage_report()
+    if tool_id == "computer.open_settings":
+        return computer_control.open_system_settings(str(arguments.get("section") or "general"))
+    if tool_id == "computer.device_access":
+        return computer_control.device_access_summary()
     if tool_id == "browser.search":
         site = arguments.get("site") or "https://duckduckgo.com/?q="
         return await browser_automation.open_and_search(str(arguments.get("query", "")), str(site))
@@ -190,6 +290,18 @@ async def _execute_automation_tool(tool_id: str, arguments: dict[str, Any]) -> d
 
 
 async def _execute_live_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    # Clock tools are always available (local OS time; no network required).
+    if name == "time_now":
+        from app.services.world_time import now_in_timezone
+
+        tz = arguments.get("timezone")
+        return now_in_timezone(str(tz).strip() if isinstance(tz, str) and tz.strip() else None)
+    if name == "time_world_clock":
+        from app.services.world_time import world_clock
+
+        places = arguments.get("places") if isinstance(arguments.get("places"), list) else []
+        return world_clock([str(p) for p in places if str(p).strip()])
+
     if not live_web_enabled():
         raise ProviderRequestFailed("Live web and weather are disabled in Settings.")
     if name == "research_search":
@@ -215,9 +327,13 @@ async def _execute_live_tool(name: str, arguments: dict[str, Any]) -> dict[str, 
 
         location = arguments.get("location")
         if not isinstance(location, str) or not location.strip():
-            raise ProviderRequestFailed("Invalid weather location.")
+            location = "here"
         units = arguments.get("units") or "metric"
         return await lookup_weather(location.strip(), str(units))
+    if name == "location_ip":
+        from app.services.geolocation import resolve_ip_location
+
+        return await resolve_ip_location()
     raise ProviderRequestFailed(f"Unsupported live tool '{name}'.")
 
 
@@ -282,6 +398,9 @@ async def _run_live_tools(
             "research_search": "Searching the web…",
             "research_fetch": "Reading a web page…",
             "weather_lookup": "Checking live weather…",
+            "location_ip": "Resolving IP location…",
+            "time_now": "Reading system clock…",
+            "time_world_clock": "Checking world clock…",
         }.get(name, "Using a live tool…")
         yield "status", label
         try:
@@ -298,6 +417,8 @@ async def _run_live_tools(
     summary = (
         "Summarize only the actual tool results above. Include source names and URLs only when present. "
         "For weather, speak the location, conditions, and temperature clearly. "
+        "For time/world clock, speak the exact tool times — never invent a clock reading. "
+        "For IP location, note it is approximate city-level from public IP, not GPS. "
         "Do not claim that other sites were accessed."
     )
     if spoken:
@@ -368,22 +489,44 @@ async def orchestrated_stream(
     # Research mode (including voice questions promoted for live facts).
     if mode == "research":
         research_messages = _research_guidance(messages, live_ok, spoken=spoken)
-        if not live_ok:
-            async for text in stream_completion(
-                research_messages,
-                max_tokens=550 if spoken else None,
-                temperature=0.4 if spoken else 0.5,
-            ):
-                yield "delta", text
-            return
-
-        # Soft nudge: weather questions should prefer weather_lookup.
         user_text = _last_user_text(messages)
+        clock_only = (TIME_HINT.search(user_text) or LOCATION_HINT.search(user_text) or WEATHER_HINT.search(user_text)) and not live_ok
+        # Soft nudges so the model picks the right tool.
         if WEATHER_HINT.search(user_text):
             research_messages.append({
                 "role": "system",
-                "content": "This looks like a weather question — call weather_lookup with the best place name you can infer (ask only if none is given).",
+                "content": (
+                    "This looks like a weather question — call weather_lookup. "
+                    "If no city is named, use location 'here' for auto IP-based local weather."
+                ),
             })
+        if TIME_HINT.search(user_text):
+            research_messages.append({
+                "role": "system",
+                "content": "This looks like a date/time or world-clock question — call time_now or time_world_clock. Never guess the time.",
+            })
+        if LOCATION_HINT.search(user_text):
+            research_messages.append({
+                "role": "system",
+                "content": "This looks like a location question — call location_ip for approximate city from public IP.",
+            })
+
+        # When live web is off, still allow accurate clock tools (and fail clearly for weather/location).
+        schemas = _live_tool_schemas()
+        if not live_ok:
+            if not (TIME_HINT.search(user_text) or LOCATION_HINT.search(user_text) or WEATHER_HINT.search(user_text)):
+                async for text in stream_completion(
+                    research_messages,
+                    max_tokens=550 if spoken else None,
+                    temperature=0.4 if spoken else 0.5,
+                ):
+                    yield "delta", text
+                return
+            schemas = [
+                tool for tool in schemas
+                if str(tool.get("function", {}).get("name", "")) in {"time_now", "time_world_clock", "weather_lookup", "location_ip"}
+            ]
+            _ = clock_only  # kept for clarity; schemas already filtered
 
         async def _live_exec(calls: list[Any], safe_messages: list[dict[str, Any]]):
             async for event in _run_live_tools(calls, safe_messages, spoken=spoken):
@@ -391,7 +534,7 @@ async def orchestrated_stream(
 
         async for event in _stream_with_tool_round(
             research_messages,
-            _live_tool_schemas(),
+            schemas,
             execute_calls=_live_exec,
             max_tokens=550 if spoken else 900,
             temperature=0.4 if spoken else 0.45,
@@ -459,6 +602,9 @@ async def orchestrated_stream(
                         "research_search": "Searching the web…",
                         "research_fetch": "Reading a web page…",
                         "weather_lookup": "Checking live weather…",
+                        "location_ip": "Resolving IP location…",
+                        "time_now": "Reading system clock…",
+                        "time_world_clock": "Checking world clock…",
                     }.get(name, "Using a live tool…")
                     try:
                         result = await _execute_live_tool(name, arguments)

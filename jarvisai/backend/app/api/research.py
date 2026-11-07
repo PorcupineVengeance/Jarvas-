@@ -48,7 +48,11 @@ async def search_provider(query: str) -> dict:
 
 @router.post("/search")
 async def search(body: SearchRequest, _user: User = Depends(get_current_user)):
+    from app.core.permissions import live_web_enabled
+
     settings = get_settings()
+    if not live_web_enabled():
+        raise HTTPException(status_code=403, detail="Live web is disabled. Enable Live web & weather in Settings.")
     if not settings.research_ready:
         raise HTTPException(status_code=503, detail="Research is not configured. Set JARVIS_RESEARCH_PROVIDER=duckduckgo or provide Tavily/Manus credentials.")
     try:

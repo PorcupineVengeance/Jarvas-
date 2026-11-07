@@ -3,7 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { Activity, AudioLines, Check, ChevronRight, CircleStop, Download, FileText, MessageSquareText, Mic, Monitor, Plus, Send, Settings2, ShieldAlert, Sparkles, Volume2, X } from 'lucide-react';
 import { api, type AppStatus, type Task, type User } from '../lib/api';
 import { isJarvisDesktop } from '../lib/desktop';
-import { browserSpeechSupported, ensureMicrophonePermissionCached, forSpeech, getPreferredVoice, playAudioBlob, setVoiceBusy, shouldUseServerStt, speakWithBrowser, startBrowserListen, startVoiceCapture, type LiveListenHandle, type RecordingHandle } from '../lib/voiceConversation';
+import { browserSpeechSupported, ensureMicrophonePermissionCached, forSpeech, getPreferredVoice, matchSleepPhrase, playAudioBlob, setJarvisSessionOnline, setVoiceBusy, shouldUseServerStt, speakWithBrowser, startBrowserListen, startVoiceCapture, type LiveListenHandle, type RecordingHandle } from '../lib/voiceConversation';
 
 function Meter({ label, value, display }: { label: string; value?: number; display: string }) {
   const safeValue = Math.max(0, Math.min(100, value ?? 0));
@@ -352,6 +352,11 @@ export default function HomePage({ user }: { user: User }) {
         recordingRef.current = null;
         return;
       }
+      // “Sign off / go offline / go off” ends the session → standby until Hey JARVIS again.
+      if (matchSleepPhrase(text).matched) {
+        window.dispatchEvent(new CustomEvent('jarvis:sleep', { detail: { trigger: text } }));
+        return;
+      }
       emptyListenRef.current = 0;
       setDraft('');
       setChatError('');
@@ -385,6 +390,9 @@ export default function HomePage({ user }: { user: User }) {
       const queuedCommand = (command || window.sessionStorage.getItem('jarvis.wakeCommand') || '').trim();
       window.sessionStorage.removeItem('jarvis.wakeCommand');
       window.sessionStorage.removeItem('jarvis.startVoice');
+      setJarvisSessionOnline(true);
+      // Soft-notify Desktop shell (optional bring-to-front stays off so tray wake works).
+      try { void window.jarvisDesktop?.onAssistantOnline?.(); } catch { /* ignore */ }
       if (queuedCommand) {
         // “Hey JARVIS what’s the weather” → answer immediately.
         setVoiceMode(true);
@@ -404,12 +412,47 @@ export default function HomePage({ user }: { user: User }) {
       })();
     };
 
+    const handleSleep = (trigger?: string) => {
+      voiceLoopRef.current = false;
+      listenTokenRef.current += 1;
+      emptyListenRef.current = 0;
+      recordingRef.current?.stop();
+      recordingRef.current = null;
+      chatAbortRef.current?.abort();
+      speakAbortRef.current?.abort();
+      if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+      setPhase('idle');
+      setLevel(0);
+      setVoiceBusy(false);
+      setVoiceMode(false);
+      setJarvisSessionOnline(false);
+      setVoiceHint('Signed off — say Hey JARVIS to return');
+      setChatError('');
+      try { void window.jarvisDesktop?.onAssistantStandby?.(); } catch { /* ignore */ }
+      const line = trigger && /good\s*night/i.test(trigger)
+        ? 'Good night, sir. Call me when you need me.'
+        : 'Signing off, sir. Say Hey JARVIS when you need me.';
+      void (async () => {
+        try { await speakReplyRef.current(line); } catch { /* ignore */ }
+        setVoiceBusy(false);
+        setVoiceHint('Standby · listening for Hey / Yo JARVIS');
+      })();
+    };
+
     const onWake = (event: Event) => {
       const detail = (event as CustomEvent<{ command?: string }>).detail;
       handleWake(detail?.command);
     };
+    const onSleep = (event: Event) => {
+      const detail = (event as CustomEvent<{ trigger?: string }>).detail;
+      handleSleep(detail?.trigger);
+    };
     window.addEventListener('jarvis:wake', onWake);
-    return () => window.removeEventListener('jarvis:wake', onWake);
+    window.addEventListener('jarvis:sleep', onSleep);
+    return () => {
+      window.removeEventListener('jarvis:wake', onWake);
+      window.removeEventListener('jarvis:sleep', onSleep);
+    };
   }, []);
 
   useEffect(() => {
@@ -457,7 +500,7 @@ export default function HomePage({ user }: { user: User }) {
       speakAbortRef.current?.abort();
       if ('speechSynthesis' in window) window.speechSynthesis.cancel();
       setPhase('idle');
-            if (voiceMode) {
+      if (voiceMode) {
         voiceLoopRef.current = true;
         void beginListening();
       }
@@ -473,6 +516,11 @@ export default function HomePage({ user }: { user: User }) {
   const sendText = async (raw: string) => {
     const text = raw.trim();
     if (!text || busy) return;
+    if (matchSleepPhrase(text).matched) {
+      setDraft('');
+      window.dispatchEvent(new CustomEvent('jarvis:sleep', { detail: { trigger: text } }));
+      return;
+    }
     const keepVoice = voiceMode;
     if (!keepVoice) voiceLoopRef.current = false;
     else {
@@ -487,7 +535,8 @@ export default function HomePage({ user }: { user: User }) {
     stopEverything();
     setVoiceMode(false);
     setChatError('');
-      };
+    setVoiceHint('Call ended — still online. Say “sign off” for standby, or Hey JARVIS to talk again.');
+  };
 
   const onDesktop = isJarvisDesktop() || Boolean(status?.desktop?.is_desktop);
   const downloads = status?.desktop?.downloads;

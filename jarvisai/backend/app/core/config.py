@@ -61,6 +61,8 @@ class Settings(BaseSettings):
     jarvis_enable_live_web: bool = True
     # Bluetooth list/connect/disconnect for paired accessories (Desktop only).
     jarvis_enable_bluetooth: bool = False
+    # When true (Desktop), allow the whole user home folder + settings/storage tools.
+    jarvis_enable_full_device_access: bool = False
     jarvis_allowed_paths: str = "~/Desktop,~/Documents,~/Downloads"
     jarvis_wake_word_enabled: bool = False
     jarvis_continuous_listening: bool = False

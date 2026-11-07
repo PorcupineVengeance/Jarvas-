@@ -14,6 +14,8 @@ export type JarvisDesktopBridge = {
   revealDataDir: () => Promise<boolean>;
   ensureMicrophone?: () => Promise<{ granted: boolean; status: string }>;
   openMicrophoneSettings?: () => Promise<boolean>;
+  onAssistantOnline?: () => Promise<boolean>;
+  onAssistantStandby?: () => Promise<boolean>;
 };
 
 declare global {

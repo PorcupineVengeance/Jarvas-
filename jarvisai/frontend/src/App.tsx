@@ -3,7 +3,7 @@ import { Link, Navigate, NavLink, Route, Routes, useLocation, useNavigate } from
 import { Activity, Apple, AudioLines, CalendarDays, ChevronRight, CircleHelp, Download, Home, LogOut, MessageSquareText, Mic, Monitor, Settings2, ShieldCheck, Wrench } from 'lucide-react';
 import { api, ApiError, type Session, type User } from './lib/api';
 import { isJarvisDesktop } from './lib/desktop';
-import { isWakeWordEnabled, setWakeWordEnabled, startWakeWordMonitor, type WakeWordHandle } from './lib/voiceConversation';
+import { isWakeWordEnabled, setJarvisSessionOnline, setWakeWordEnabled, setVoiceBusy, speakWithBrowser, startWakeWordMonitor, type WakeWordHandle } from './lib/voiceConversation';
 import HomePage from './pages/HomePage';
 import ChatPage from './pages/ChatPage';
 import VoicePage from './pages/VoicePage';
@@ -161,6 +161,7 @@ function AppLayout({ user, onSignOut, openAccess }: { user: User; onSignOut: () 
   const [clock, setClock] = useState(new Date());
   const [wakeArmed, setWakeArmed] = useState(() => isWakeWordEnabled());
   const [wakeStatus, setWakeStatus] = useState('idle');
+  const [sessionOnline, setSessionOnline] = useState(false);
   const [sttReady, setSttReady] = useState(false);
   useEffect(() => { const timer = window.setInterval(() => setClock(new Date()), 1000); return () => window.clearInterval(timer); }, []);
 
@@ -190,11 +191,17 @@ function AppLayout({ user, onSignOut, openAccess }: { user: User; onSignOut: () 
       const detail = (event as CustomEvent<{ state?: string }>).detail;
       if (detail?.state) setWakeStatus(detail.state);
     };
+    const onSession = (event: Event) => {
+      const detail = (event as CustomEvent<{ online?: boolean }>).detail;
+      setSessionOnline(Boolean(detail?.online));
+    };
     window.addEventListener('jarvis:wake-word-pref', onPref);
     window.addEventListener('jarvis:wake-status', onStatus);
+    window.addEventListener('jarvis:session', onSession);
     return () => {
       window.removeEventListener('jarvis:wake-word-pref', onPref);
       window.removeEventListener('jarvis:wake-status', onStatus);
+      window.removeEventListener('jarvis:session', onSession);
     };
   }, []);
 
@@ -212,11 +219,27 @@ function AppLayout({ user, onSignOut, openAccess }: { user: User; onSignOut: () 
         sttReady,
         transcribe: async (file) => (await api.transcribe(file)).text,
         onWake: (_heard, command) => {
+          setJarvisSessionOnline(true);
+          setSessionOnline(true);
           if (command) window.sessionStorage.setItem('jarvis.wakeCommand', command);
           else window.sessionStorage.removeItem('jarvis.wakeCommand');
           window.sessionStorage.setItem('jarvis.startVoice', '1');
           if (location.pathname !== '/') navigate('/');
           window.dispatchEvent(new CustomEvent('jarvis:wake', { detail: { command } }));
+        },
+        onSleep: (_heard, trigger) => {
+          setJarvisSessionOnline(false);
+          setSessionOnline(false);
+          setVoiceBusy(false);
+          window.dispatchEvent(new CustomEvent('jarvis:sleep', { detail: { trigger } }));
+          // If Home isn't mounted, still acknowledge verbally from standby.
+          if (location.pathname !== '/') {
+            const line = trigger && /good\s*night/i.test(trigger)
+              ? 'Good night, sir. Call me when you need me.'
+              : 'Signing off, sir. Say Hey JARVIS when you need me.';
+            void speakWithBrowser(line).catch(() => undefined);
+          }
+          try { void window.jarvisDesktop?.onAssistantStandby?.(); } catch { /* ignore */ }
         },
       });
     };
@@ -225,6 +248,8 @@ function AppLayout({ user, onSignOut, openAccess }: { user: User; onSignOut: () 
       handle = null;
       setWakeStatus('paused');
     };
+    // Release the wake mic while a call owns it (Electron can't share getUserMedia cleanly).
+    // Sleep during a call is handled by the call transcript / typed “sign off”.
     const onBusy = () => disarm();
     const onIdle = () => {
       // Clear sticky busy flag that can block re-arm after a failed call.
@@ -274,9 +299,13 @@ function AppLayout({ user, onSignOut, openAccess }: { user: User; onSignOut: () 
             title={
               wakeStatus === 'mic-blocked'
                 ? 'Microphone permission needed'
-                : wakeStatus === 'capturing' || wakeStatus === 'heard' || wakeStatus === 'wake'
-                  ? 'Heard you — starting'
-                  : 'Say Hey JARVIS or Yo JARVIS'
+                : wakeStatus === 'sleep'
+                  ? 'Signed off — standby'
+                  : wakeStatus === 'capturing' || wakeStatus === 'heard' || wakeStatus === 'wake'
+                    ? 'Heard you — starting'
+                    : sessionOnline
+                      ? 'Online — say “sign off” or “go offline” to standby'
+                      : 'Standby — say Hey JARVIS or Yo JARVIS (works while app is in tray)'
             }
           >
             <Mic size={13} />
@@ -285,11 +314,15 @@ function AppLayout({ user, onSignOut, openAccess }: { user: User; onSignOut: () 
                 ? 'Mic blocked — enable in Settings'
                 : wakeStatus === 'capturing'
                   ? 'Hearing you…'
-                  : wakeStatus === 'wake' || wakeStatus === 'heard'
-                    ? 'Waking JARVIS…'
-                    : wakeStatus === 'error' || wakeStatus === 'unavailable'
-                      ? 'Wake unavailable — check mic'
-                      : 'Listening for “Hey / Yo JARVIS”'}
+                  : wakeStatus === 'sleep'
+                    ? 'Signed off — standby'
+                    : wakeStatus === 'wake' || wakeStatus === 'heard'
+                      ? 'Waking JARVIS…'
+                      : wakeStatus === 'error' || wakeStatus === 'unavailable'
+                        ? 'Wake unavailable — check mic'
+                        : sessionOnline
+                          ? 'Online · say “sign off” to standby'
+                          : 'Standby · “Hey / Yo JARVIS”'}
             </span>
           </div>
         )}

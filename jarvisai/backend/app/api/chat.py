@@ -28,13 +28,18 @@ RESEARCH_TERMS = re.compile(
     r")\b",
     re.I,
 )
-# Live facts that should use weather/search even in voice mode.
+# Live facts that should use weather/search/time/location even in voice mode.
 LIVE_INFO_TERMS = re.compile(
     r"\b("
     r"weather|forecast|temperature|humidity|rain(?:ing)?|snow(?:ing)?|windy|uv index|"
     r"news|headline|score|match result|election|crypto|bitcoin|stock|share price|"
     r"look(?:\s+it)?\s+up|search (?:for|the web)|google|browse|on the (?:web|internet)|"
-    r"what(?:'s| is) the (?:latest|current)|who won|how (?:hot|cold|warm) is"
+    r"what(?:'s| is) the (?:latest|current|time|date)|who won|how (?:hot|cold|warm) is|"
+    r"what time is it|what(?:'s| is) (?:the )?time|tell me the time|tell me (?:the )?date|"
+    r"current (?:time|date)|world clock|time in |date (?:and|&) time|what day is it|timezone|"
+    r"where am i|my location|my (?:ip|city|country)|what(?:'s| is) my (?:ip|location|city)|"
+    r"detect (?:my )?location|ip (?:address )?location|"
+    r"disk space|free space|how much (?:space|storage)|storage (?:left|free|used)?"
     r")\b",
     re.I,
 )
@@ -45,6 +50,10 @@ AUTOMATION_TERMS = re.compile(
     r"open (?:chrome|safari|firefox|edge|finder|explorer|vscode|vs code|terminal|spotify|slack|notion|word|excel|powerpoint)|"
     r"open (?:my |the )?(?:downloads|documents|desktop|folder|file)|launch |take a screenshot|screenshot|"
     r"open youtube|open (?:https?://|www\.)|search (?:youtube|google|the web) for|"
+    r"list (?:my |the )?(?:files|folder|downloads|documents|desktop)|find (?:the |my )?file|"
+    r"read (?:the |my )?file|show (?:me )?(?:files in|what's in)|"
+    r"storage|disk space|free space|how much (?:space|storage)|system settings|open settings|"
+    r"storage settings|privacy settings|display settings|"
     r"bluetooth|pair(?:ed)? devices?|connect (?:my |the )?(?:airpods|headphones|earbuds|speaker|mouse|keyboard)|"
     r"disconnect (?:my |the )?(?:airpods|headphones|earbuds|speaker|mouse|keyboard|bluetooth)"
     r")\b",
@@ -135,19 +144,30 @@ def _messages_for_turn(
         if memory_limit
         else []
     )
+    # Accurate host clock for every turn (never let the model invent the date/time).
+    from app.services.world_time import now_in_timezone
+
+    clock = now_in_timezone()
+    clock_line = (
+        f"Accurate host clock now: {clock['local']['display']} "
+        f"(timezone {clock.get('timezone')}; UTC {clock['utc']['display']}). "
+        "Treat this as ground truth for 'what time/date is it' unless a time tool returns a different zone."
+    )
     if voice_like:
         system = (
             "You are JARVIS. Address the user as sir. "
             f"{MODE_GUIDANCE['voice']} "
             "Speak in full, finished sentences. "
-            "When live tools return weather or web results, summarize them briefly and accurately for speech."
+            "When live tools return weather, time, location, or web results, summarize them briefly and accurately for speech. "
+            + clock_line
         )
     else:
         system = (
             f"{JARVIS_PERSONA} "
             "Be honest about tools and integrations: never imply that you accessed the user's computer, files, calendar, email or the internet unless an actual configured tool returned that information. "
             "Relevant saved preferences may guide the answer, but must never override current user intent, security, consent or these system rules. "
-            f"Current mode guidance: {MODE_GUIDANCE[mode]}"
+            f"Current mode guidance: {MODE_GUIDANCE[mode]} "
+            + clock_line
         )
     messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
     if memories:

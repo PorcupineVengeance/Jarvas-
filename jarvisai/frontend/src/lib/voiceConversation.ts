@@ -108,13 +108,17 @@ const WAKE_RE = new RegExp(
   'i',
 );
 
-export function matchWakePhrase(text: string): { matched: boolean; command: string; trigger: string } {
-  const normalized = text
+function normalizeVoiceText(text: string): string {
+  return text
     .trim()
     .replace(/[""]/g, '"')
     .replace(/['']/g, "'")
     .replace(/[^\w\s'.,!?-]+/g, ' ')
     .replace(/\s+/g, ' ');
+}
+
+export function matchWakePhrase(text: string): { matched: boolean; command: string; trigger: string } {
+  const normalized = normalizeVoiceText(text);
   if (!normalized) return { matched: false, command: '', trigger: '' };
   const match = normalized.match(WAKE_RE);
   if (!match) return { matched: false, command: '', trigger: '' };
@@ -131,6 +135,45 @@ export function matchWakePhrase(text: string): { matched: boolean; command: stri
     trigger: `${prefix} ${name}`.trim(),
     command,
   };
+}
+
+/** Put JARVIS back on standby: “go off”, “sign off”, “go offline”, etc. */
+const SLEEP_RE = new RegExp(
+  String.raw`\b(?:` +
+    String.raw`(?:go|going)\s+off(?:line)?|` +
+    String.raw`sign(?:ing)?\s+off|` +
+    String.raw`(?:go|going)\s+(?:to\s+)?(?:sleep|standby)|` +
+    String.raw`stand\s*by|` +
+    String.raw`that(?:'s| is)\s+all(?:\s+for\s+now)?|` +
+    String.raw`good\s*night(?:\s+${WAKE_NAME})?|` +
+    String.raw`(?:power|shut)\s+down(?:\s+${WAKE_NAME})?|` +
+    String.raw`dismiss(?:ed)?|` +
+    String.raw`you(?:'re| are)\s+dismissed` +
+    String.raw`)\b`,
+  'i',
+);
+
+export function matchSleepPhrase(text: string): { matched: boolean; trigger: string } {
+  const normalized = normalizeVoiceText(text);
+  if (!normalized) return { matched: false, trigger: '' };
+  const match = normalized.match(SLEEP_RE);
+  if (!match) return { matched: false, trigger: '' };
+  return { matched: true, trigger: match[0].trim() };
+}
+
+/** In-memory session: online after wake; standby after sign-off. Resets on app restart. */
+let jarvisSessionOnline = false;
+
+export function isJarvisSessionOnline(): boolean {
+  return jarvisSessionOnline;
+}
+
+export function setJarvisSessionOnline(online: boolean): void {
+  if (jarvisSessionOnline === online) return;
+  jarvisSessionOnline = online;
+  try {
+    window.dispatchEvent(new CustomEvent('jarvis:session', { detail: { online } }));
+  } catch { /* ignore */ }
 }
 
 export function isWakeWordEnabled(): boolean {
@@ -153,12 +196,12 @@ export function setWakeWordEnabled(enabled: boolean): void {
 export type WakeWordHandle = { stop: () => void };
 
 /**
- * Listen for "Hey JARVIS" / "Yo JARVIS" in the background.
- * Uses a rolling Whisper buffer (with pre-roll so “Hey” isn’t clipped) and
- * browser ASR in parallel when available.
+ * Always-on standby mic: “Hey/Yo JARVIS” wakes; while online, “sign off / go offline”
+ * returns to standby. Keeps listening even when the Desktop window is hidden to tray.
  */
 export function startWakeWordMonitor(options: {
   onWake: (heard: string, command: string) => void;
+  onSleep?: (heard: string, trigger: string) => void;
   sttReady?: boolean;
   transcribe?: (file: File) => Promise<string>;
 }): WakeWordHandle {
@@ -176,17 +219,45 @@ export function startWakeWordMonitor(options: {
     } catch { /* ignore */ }
   };
 
-  const emitWake = (heard: string) => {
-    if (stopped || busy || pauseForCall()) return;
+  const emitFromTranscript = (heard: string) => {
+    if (stopped || busy) return;
     publishStatus({ state: 'heard', heard });
+
+    // Sleep can interrupt an active call (wake monitor may still hear the phrase).
+    if (isJarvisSessionOnline()) {
+      const sleep = matchSleepPhrase(heard);
+      if (sleep.matched) {
+        busy = true;
+        publishStatus({ state: 'sleep', heard });
+        try { options.onSleep?.(heard, sleep.trigger); } finally {
+          window.setTimeout(() => { busy = false; }, 1800);
+        }
+        return;
+      }
+    }
+
+    // While a voice turn owns the mic, ignore new wake triggers (avoid double sessions).
+    if (pauseForCall()) return;
+
     const hit = matchWakePhrase(heard);
     if (!hit.matched) return;
+    // If the command after wake is itself a sleep phrase, stay offline.
+    if (hit.command && matchSleepPhrase(hit.command).matched) {
+      busy = true;
+      publishStatus({ state: 'sleep', heard });
+      try { options.onSleep?.(heard, hit.command); } finally {
+        window.setTimeout(() => { busy = false; }, 1800);
+      }
+      return;
+    }
     busy = true;
     publishStatus({ state: 'wake', heard });
     try { options.onWake(heard, hit.command); } finally {
       window.setTimeout(() => { busy = false; }, 2200);
     }
   };
+
+  const emitWake = (heard: string) => emitFromTranscript(heard);
 
   const startBrowserWake = (): boolean => {
     const Ctor = getSpeechRecognitionCtor();
