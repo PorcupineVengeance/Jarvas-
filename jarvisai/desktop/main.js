@@ -116,29 +116,81 @@ function waitForHealth(port, timeoutMs = 45000) {
   });
 }
 
+function parseEnvFile(filePath) {
+  const out = {};
+  if (!filePath || !fs.existsSync(filePath)) return out;
+  let text = '';
+  try {
+    text = fs.readFileSync(filePath, 'utf8');
+  } catch {
+    return out;
+  }
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const eq = line.indexOf('=');
+    if (eq <= 0) continue;
+    const key = line.slice(0, eq).trim();
+    let value = line.slice(eq + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    if (key) out[key] = value;
+  }
+  return out;
+}
+
 function seedEnvFromProject(paths) {
-  if (fs.existsSync(paths.envFile)) return;
-  const candidates = [
-    path.join(projectRoot(), '.env'),
-    path.join(projectRoot(), '.env.example'),
-  ];
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) {
-      fs.copyFileSync(candidate, paths.envFile);
-      return;
+  const projectEnv = path.join(projectRoot(), '.env');
+  const exampleEnv = path.join(projectRoot(), '.env.example');
+
+  // First launch: copy project .env (with keys) into userData.
+  if (!fs.existsSync(paths.envFile)) {
+    for (const candidate of [projectEnv, exampleEnv]) {
+      if (fs.existsSync(candidate)) {
+        fs.copyFileSync(candidate, paths.envFile);
+        break;
+      }
     }
   }
-  fs.writeFileSync(
-    paths.envFile,
-    [
-      'JARVIS_OPEN_ACCESS=true',
-      'JARVIS_LOCAL_AUTH_ENABLED=true',
-      'JARVIS_LOCAL_AUTH_SECRET=jarvis-desktop-local-secret',
-      'JARVIS_RESEARCH_PROVIDER=duckduckgo',
-      '',
-    ].join('\n'),
-    'utf8',
-  );
+
+  // If userData .env exists but has no LLM key, merge missing keys from project .env.
+  if (fs.existsSync(projectEnv) && fs.existsSync(paths.envFile)) {
+    const userVars = parseEnvFile(paths.envFile);
+    const projectVars = parseEnvFile(projectEnv);
+    const needKey = !userVars.JARVIS_LLM_API_KEY && projectVars.JARVIS_LLM_API_KEY;
+    if (needKey) {
+      const merged = { ...projectVars, ...userVars, ...Object.fromEntries(
+        Object.entries(projectVars).filter(([k, v]) => v && !userVars[k]),
+      ) };
+      // Prefer filling empty user keys from project.
+      for (const [k, v] of Object.entries(projectVars)) {
+        if (!userVars[k] && v) merged[k] = v;
+      }
+      const body = Object.entries(merged)
+        .map(([k, v]) => `${k}=${v}`)
+        .join('\n') + '\n';
+      fs.writeFileSync(paths.envFile, body, 'utf8');
+    }
+  }
+
+  if (!fs.existsSync(paths.envFile)) {
+    fs.writeFileSync(
+      paths.envFile,
+      [
+        'JARVIS_OPEN_ACCESS=true',
+        'JARVIS_LOCAL_AUTH_ENABLED=true',
+        'JARVIS_LOCAL_AUTH_SECRET=jarvis-desktop-local-secret',
+        'JARVIS_RESEARCH_PROVIDER=duckduckgo',
+        'JARVIS_ENABLE_LIVE_WEB=true',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+  }
 }
 
 function sidecarEnv(paths, port) {
@@ -151,8 +203,14 @@ function sidecarEnv(paths, port) {
   const frontendDir = app.isPackaged
     ? resourcePath('frontend')
     : path.join(projectRoot(), 'frontend', 'dist');
+  // Load .env into the sidecar process (Python may not see userData cwd otherwise).
+  const fileEnv = {
+    ...parseEnvFile(path.join(projectRoot(), '.env')),
+    ...parseEnvFile(paths.envFile),
+  };
   return {
     ...process.env,
+    ...fileEnv,
     JARVIS_DESKTOP: '1',
     JARVIS_ENABLE_COMPUTER_CONTROL: computer ? 'true' : 'false',
     JARVIS_ENABLE_LIVE_WEB: liveWeb ? 'true' : 'false',

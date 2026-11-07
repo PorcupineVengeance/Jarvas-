@@ -168,10 +168,10 @@ function AppLayout({ user, onSignOut, openAccess }: { user: User; onSignOut: () 
   useEffect(() => {
     // Desktop: arm Hey/Yo JARVIS once (also re-enables if it was left off during earlier fixes).
     try {
-      if (window.jarvisDesktop?.isDesktop && localStorage.getItem('jarvis.wake_word_v3') !== '1') {
+      if (window.jarvisDesktop?.isDesktop && localStorage.getItem('jarvis.wake_word_v4') !== '1') {
         setWakeWordEnabled(true);
         setWakeArmed(true);
-        localStorage.setItem('jarvis.wake_word_v3', '1');
+        localStorage.setItem('jarvis.wake_word_v4', '1');
       }
     } catch { /* ignore */ }
   }, []);
