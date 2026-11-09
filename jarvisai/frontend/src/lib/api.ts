@@ -116,7 +116,7 @@ export const api = {
   deleteMemory: (id: string) => request<{ ok: boolean }>(`/api/memory/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   conversations: () => request<Array<{ id: string; title: string; created_at: string; updated_at: string }>>('/api/chat/conversations'),
   conversation: (id: string) => request<{ id: string; title: string; messages: ChatMessage[]; missing?: boolean }>(`/api/chat/conversations/${encodeURIComponent(id)}`),
-  streamChat: async (body: { message: string; conversation_id?: string; client_message_id: string; mode: string }, onEvent: (event: string, data: Record<string, unknown>) => void, signal?: AbortSignal) => {
+  streamChat: async (body: { message: string; conversation_id?: string; client_message_id: string; mode: string; browser_context?: Record<string, unknown> }, onEvent: (event: string, data: Record<string, unknown>) => void, signal?: AbortSignal) => {
     const post = (payload: typeof body) => fetch('/api/chat', {
       method: 'POST',
       credentials: 'same-origin',

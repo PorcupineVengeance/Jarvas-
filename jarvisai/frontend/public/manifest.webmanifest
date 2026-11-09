@@ -1,0 +1,20 @@
+{
+  "name": "JARVIS",
+  "short_name": "JARVIS",
+  "description": "Personal AI assistant with permission-aware browser tools.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#050506",
+  "theme_color": "#050506",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "/jarvis-mark.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["productivity", "utilities"]
+}

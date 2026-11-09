@@ -74,6 +74,7 @@ class ChatRequest(BaseModel):
     conversation_id: str | None = None
     client_message_id: str = Field(default_factory=lambda: str(uuid4()), max_length=64)
     mode: Mode = "auto"
+    browser_context: dict[str, Any] | None = None
 
 
 def resolve_mode(message: str, requested: Mode) -> Literal["normal", "research", "assistant", "developer", "automation", "focus", "voice"]:
@@ -221,9 +222,19 @@ async def chat(body: ChatRequest, db: Session = Depends(get_db), user: User = De
     async def events() -> AsyncIterator[str]:
         answer: list[str] = []
         try:
-            async for event_type, value in orchestrated_stream(prompt, selected_mode, spoken=spoken):
+            async for event_type, value in orchestrated_stream(
+                prompt,
+                selected_mode,
+                spoken=spoken,
+                browser_context=body.browser_context if isinstance(body.browser_context, dict) else None,
+            ):
                 if event_type == "status":
                     yield "event: status\ndata: " + json.dumps({"status": value}, ensure_ascii=False) + "\n\n"
+                    continue
+                if event_type == "client_action":
+                    yield "event: client_action\ndata: " + json.dumps(value, ensure_ascii=False, default=str) + "\n\n"
+                    continue
+                if event_type != "delta" or not isinstance(value, str):
                     continue
                 answer.append(value)
                 yield "event: delta\ndata: " + json.dumps({"text": value}, ensure_ascii=False) + "\n\n"

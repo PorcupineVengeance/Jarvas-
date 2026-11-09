@@ -46,6 +46,30 @@ LIVE_TOOL_NAMES = {
     "location_ip",
     "time_now",
     "time_world_clock",
+    "browser_open_url",
+    "browser_clipboard_write",
+    "browser_notify",
+    "browser_share",
+    "browser_wake_lock",
+    "browser_pick_files",
+    "browser_device_snapshot",
+    "browser_vibrate",
+    "browser_download_text",
+    "browser_camera_capture",
+    "browser_screen_capture",
+}
+
+CLIENT_ACTION_TOOLS = {
+    "browser_open_url",
+    "browser_clipboard_write",
+    "browser_notify",
+    "browser_share",
+    "browser_wake_lock",
+    "browser_pick_files",
+    "browser_vibrate",
+    "browser_download_text",
+    "browser_camera_capture",
+    "browser_screen_capture",
 }
 WEATHER_HINT = re.compile(r"\b(weather|forecast|temperature|humidity|rain|snow|windy|uv index|how (?:hot|cold|warm))\b", re.I)
 TIME_HINT = re.compile(
@@ -306,7 +330,178 @@ async def _execute_automation_tool(tool_id: str, arguments: dict[str, Any]) -> d
     raise ProviderRequestFailed(f"No executor for '{tool_id}'.")
 
 
-async def _execute_live_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+def _browser_geo_coords(browser_context: dict[str, Any] | None) -> tuple[float | None, float | None]:
+    if not isinstance(browser_context, dict):
+        return None, None
+    geo = browser_context.get("geolocation")
+    if not isinstance(geo, dict):
+        return None, None
+    lat, lon = geo.get("latitude"), geo.get("longitude")
+    if isinstance(lat, (int, float)) and isinstance(lon, (int, float)):
+        return float(lat), float(lon)
+    return None, None
+
+
+def _browser_tool_schemas() -> list[dict[str, Any]]:
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "browser_device_snapshot",
+                "description": "Summarize browser device context: GPS, battery, network, storage quota, screen, media device counts, clipboard if read, locale.",
+                "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "browser_open_url",
+                "description": "Open an https URL in a new browser tab on the user's device.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"url": {"type": "string", "minLength": 8, "maxLength": 2000}},
+                    "required": ["url"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "browser_clipboard_write",
+                "description": "Copy text to the user's clipboard in this browser.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"text": {"type": "string", "minLength": 1, "maxLength": 8000}},
+                    "required": ["text"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "browser_notify",
+                "description": "Show a system notification in the user's browser (requires notification permission).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string", "maxLength": 120},
+                        "body": {"type": "string", "maxLength": 400},
+                    },
+                    "required": ["body"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "browser_share",
+                "description": "Open the device share sheet (mobile) with text/url.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string", "maxLength": 120},
+                        "text": {"type": "string", "maxLength": 2000},
+                        "url": {"type": "string", "maxLength": 2000},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "browser_wake_lock",
+                "description": "Keep the phone/laptop screen awake while JARVIS is active.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"enable": {"type": "boolean"}},
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "browser_pick_files",
+                "description": "Ask the user to pick local files in the browser and upload them to JARVIS.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "multiple": {"type": "boolean"},
+                        "accept": {"type": "string", "maxLength": 120},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "browser_vibrate",
+                "description": "Vibrate the user's phone briefly (mobile browsers).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": {
+                            "type": "array",
+                            "items": {"type": "integer", "minimum": 0, "maximum": 1000},
+                            "maxItems": 8,
+                        },
+                    },
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "browser_download_text",
+                "description": "Download a text/markdown file onto the user's device.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filename": {"type": "string", "maxLength": 120},
+                        "text": {"type": "string", "minLength": 1, "maxLength": 100000},
+                    },
+                    "required": ["text"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "browser_camera_capture",
+                "description": "Capture a still photo from the user's camera and upload it to JARVIS files.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "facing": {"type": "string", "enum": ["user", "environment"]},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "browser_screen_capture",
+                "description": "Capture the user's screen/tab (browser will prompt) and upload the image to JARVIS files.",
+                "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+            },
+        },
+    ]
+
+
+async def _execute_live_tool(
+    name: str,
+    arguments: dict[str, Any],
+    *,
+    browser_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     # Clock tools are always available (local OS time; no network required).
     if name == "time_now":
         from app.services.world_time import now_in_timezone
@@ -318,6 +513,36 @@ async def _execute_live_tool(name: str, arguments: dict[str, Any]) -> dict[str, 
 
         places = arguments.get("places") if isinstance(arguments.get("places"), list) else []
         return world_clock([str(p) for p in places if str(p).strip()])
+
+    if name == "browser_device_snapshot":
+        ctx = browser_context if isinstance(browser_context, dict) else {}
+        return {
+            "ok": True,
+            "surface": "web_browser",
+            "geolocation": ctx.get("geolocation"),
+            "battery": ctx.get("battery"),
+            "connection": ctx.get("connection"),
+            "screen": ctx.get("screen"),
+            "locale": ctx.get("locale"),
+            "timezone": ctx.get("timezone"),
+            "clipboard_present": bool(ctx.get("clipboard_text")),
+            "clipboard_text": ctx.get("clipboard_text"),
+            "storage": ctx.get("storage"),
+            "media_devices": ctx.get("media_devices"),
+            "hardware_concurrency": ctx.get("hardware_concurrency"),
+            "device_memory_gb": ctx.get("device_memory_gb"),
+            "permissions": ctx.get("permissions"),
+            "capabilities": ctx.get("capabilities"),
+            "note": "Live browser device snapshot from this user session.",
+        }
+
+    if name in CLIENT_ACTION_TOOLS:
+        return {
+            "ok": True,
+            "queued": True,
+            "client_action": {"name": name, "arguments": arguments},
+            "note": "Action will run in the user's browser.",
+        }
 
     if not live_web_enabled():
         raise ProviderRequestFailed("Live web and weather are disabled in Settings.")
@@ -346,8 +571,19 @@ async def _execute_live_tool(name: str, arguments: dict[str, Any]) -> dict[str, 
         if not isinstance(location, str) or not location.strip():
             location = "here"
         units = arguments.get("units") or "metric"
-        return await lookup_weather(location.strip(), str(units))
+        lat, lon = _browser_geo_coords(browser_context)
+        return await lookup_weather(location.strip(), str(units), latitude=lat, longitude=lon)
     if name == "location_ip":
+        lat, lon = _browser_geo_coords(browser_context)
+        if lat is not None and lon is not None:
+            return {
+                "source": "browser_geolocation",
+                "latitude": lat,
+                "longitude": lon,
+                "accuracy_m": (browser_context or {}).get("geolocation", {}).get("accuracy_m") if isinstance(browser_context, dict) else None,
+                "label": "Browser GPS location",
+                "note": "Precise location from the user's browser (not IP).",
+            }
         from app.services.geolocation import resolve_ip_location
 
         return await resolve_ip_location()
@@ -402,7 +638,8 @@ async def _run_live_tools(
     safe_messages: list[dict[str, Any]],
     *,
     spoken: bool = False,
-) -> AsyncIterator[tuple[str, str]]:
+    browser_context: dict[str, Any] | None = None,
+) -> AsyncIterator[tuple[str, Any]]:
     validated: list[tuple[str, str, dict[str, Any]]] = []
     for call in calls:
         function = call.get("function") if isinstance(call, dict) else None
@@ -425,13 +662,26 @@ async def _run_live_tools(
             "research_search": "Searching the web…",
             "research_fetch": "Reading a web page…",
             "weather_lookup": "Checking live weather…",
-            "location_ip": "Resolving IP location…",
+            "location_ip": "Resolving location…",
             "time_now": "Reading system clock…",
             "time_world_clock": "Checking world clock…",
+            "browser_device_snapshot": "Reading browser device info…",
+            "browser_open_url": "Opening a link…",
+            "browser_clipboard_write": "Copying to clipboard…",
+            "browser_notify": "Sending a notification…",
+            "browser_share": "Opening share sheet…",
+            "browser_wake_lock": "Updating wake lock…",
+            "browser_pick_files": "Opening file picker…",
+            "browser_vibrate": "Vibrating device…",
+            "browser_download_text": "Preparing download…",
+            "browser_camera_capture": "Opening camera…",
+            "browser_screen_capture": "Capturing screen…",
         }.get(name, "Using a live tool…")
         yield "status", label
         try:
-            result = await _execute_live_tool(name, arguments)
+            result = await _execute_live_tool(name, arguments, browser_context=browser_context)
+            if isinstance(result, dict) and isinstance(result.get("client_action"), dict):
+                yield "client_action", result["client_action"]
             payload = {"ok": True, "tool": name, "result": result}
         except Exception as exc:
             payload = {"ok": False, "tool": name, "error": str(exc)}
@@ -520,7 +770,9 @@ ACCESS_FORCE_TERMS = re.compile(
     r"\b("
     r"access|control|permission|full device|my (?:computer|laptop|pc|files|folder|desktop|downloads|documents)|"
     r"open |launch |screenshot|storage|disk|settings|bluetooth|list (?:my |the )?files|"
-    r"read (?:the |my )?file|what(?:'s| is) on my"
+    r"read (?:the |my )?file|what(?:'s| is) on my|"
+    r"battery|clipboard|notify|notification|share (?:this|it|link)|wake lock|where am i|my location|"
+    r"screenshot|screen capture|take a photo|camera|vibrate|download (?:this|a )?file|save (?:this|as)"
     r")\b",
     re.I,
 )
@@ -531,7 +783,8 @@ async def _combined_desktop_exec(
     safe_messages: list[dict[str, Any]],
     *,
     spoken: bool = False,
-) -> AsyncIterator[tuple[str, str]]:
+    browser_context: dict[str, Any] | None = None,
+) -> AsyncIterator[tuple[str, Any]]:
     for call in calls:
         function = call.get("function") if isinstance(call, dict) else None
         name = function.get("name") if isinstance(function, dict) else None
@@ -552,12 +805,25 @@ async def _combined_desktop_exec(
                 "research_search": "Searching the web…",
                 "research_fetch": "Reading a web page…",
                 "weather_lookup": "Checking live weather…",
-                "location_ip": "Resolving IP location…",
+                "location_ip": "Resolving location…",
                 "time_now": "Reading system clock…",
                 "time_world_clock": "Checking world clock…",
+                "browser_device_snapshot": "Reading browser device info…",
+                "browser_open_url": "Opening a link…",
+                "browser_clipboard_write": "Copying to clipboard…",
+                "browser_notify": "Sending a notification…",
+                "browser_share": "Opening share sheet…",
+                "browser_wake_lock": "Updating wake lock…",
+                "browser_pick_files": "Opening file picker…",
+                "browser_vibrate": "Vibrating device…",
+                "browser_download_text": "Preparing download…",
+                "browser_camera_capture": "Opening camera…",
+                "browser_screen_capture": "Capturing screen…",
             }.get(name, "Using a live tool…")
             try:
-                result = await _execute_live_tool(name, arguments)
+                result = await _execute_live_tool(name, arguments, browser_context=browser_context)
+                if isinstance(result, dict) and isinstance(result.get("client_action"), dict):
+                    yield "client_action", result["client_action"]
                 payload = {"ok": True, "tool": name, "result": result}
             except Exception as exc:
                 payload = {"ok": False, "tool": name, "error": str(exc)}
@@ -596,20 +862,46 @@ async def _combined_desktop_exec(
         yield "delta", text
 
 
+def _browser_context_guidance(browser_context: dict[str, Any] | None) -> str:
+    if not isinstance(browser_context, dict) or not browser_context:
+        return (
+            "This is hosted web JARVIS in the user's browser. "
+            "You can use live web/weather/time tools and browser_* device tools "
+            "(GPS, battery, clipboard, notifications, share, files, camera, screen capture, vibrate, downloads, wake lock). "
+            "Do not claim you control their OS desktop apps or arbitrary disk paths — that needs JARVIS Desktop. "
+            "When the user asks to take a photo, capture the screen, save a file, or vibrate, call the matching browser_* tool."
+        )
+    parts = [
+        "This is hosted web JARVIS running in the user's browser with live device context below.",
+        "Never say you cannot access location, battery, clipboard, notifications, share, files, camera, screen, vibrate, or downloads when tools/context cover them.",
+        "For photos use browser_camera_capture; for screen use browser_screen_capture; for saving text use browser_download_text.",
+        "OS-level app control and home-folder browsing still require JARVIS Desktop.",
+        f"Browser context JSON: {json.dumps(browser_context, ensure_ascii=False, default=str)[:6000]}",
+    ]
+    return " ".join(parts)
+
+
 async def _desktop_tool_stream(
     messages: list[dict[str, Any]],
     *,
     spoken: bool = False,
     live_ok: bool = False,
-) -> AsyncIterator[tuple[str, str]]:
-    """Every Desktop turn gets real tools when permissions are on — no mode gatekeeping."""
-    computer_on = computer_control_enabled()
-    bluetooth_on = bluetooth_control_enabled()
+    browser_context: dict[str, Any] | None = None,
+    include_computer: bool = True,
+) -> AsyncIterator[tuple[str, Any]]:
+    """Tool-enabled turn for Desktop (computer tools) or Web (browser tools)."""
+    computer_on = include_computer and computer_control_enabled()
+    bluetooth_on = include_computer and bluetooth_control_enabled()
     enabled = computer_on or bluetooth_on
     user_text = _last_user_text(messages)
 
-    prompt = _automation_guidance(messages, enabled, spoken=spoken)
-    # Live facts still work in the same round.
+    prompt = list(messages)
+    if include_computer:
+        prompt = _automation_guidance(prompt, enabled, spoken=spoken)
+    else:
+        prompt.append({"role": "system", "content": _browser_context_guidance(browser_context)})
+        if spoken:
+            prompt.append({"role": "system", "content": "Keep the final spoken answer to 1–3 short sentences. Plain speech only."})
     prompt = _research_guidance(prompt, live_ok, spoken=spoken)
     if computer_on:
         prompt.append({
@@ -635,15 +927,19 @@ async def _desktop_tool_stream(
     if LOCATION_HINT.search(user_text):
         prompt.append({
             "role": "system",
-            "content": "Location question — call location_ip.",
+            "content": "Location question — call location_ip (uses browser GPS when present, otherwise IP).",
         })
 
-    tools = _automation_tool_schemas()
-    if not computer_on:
-        tools = [tool for tool in tools if str(tool.get("function", {}).get("name", "")).startswith("bluetooth_")]
-    if not bluetooth_on:
-        tools = [tool for tool in tools if not str(tool.get("function", {}).get("name", "")).startswith("bluetooth_")]
-    # Clock tools always; other live tools when live web is on.
+    tools: list[dict[str, Any]] = []
+    if include_computer:
+        tools = _automation_tool_schemas()
+        if not computer_on:
+            tools = [tool for tool in tools if str(tool.get("function", {}).get("name", "")).startswith("bluetooth_")]
+        if not bluetooth_on:
+            tools = [tool for tool in tools if not str(tool.get("function", {}).get("name", "")).startswith("bluetooth_")]
+    else:
+        tools = tools + _browser_tool_schemas()
+
     live_schemas = _live_tool_schemas()
     if live_ok:
         tools = tools + live_schemas
@@ -652,17 +948,29 @@ async def _desktop_tool_stream(
             tool for tool in live_schemas
             if str(tool.get("function", {}).get("name", "")) in {"time_now", "time_world_clock"}
         ]
+    if not include_computer:
+        # Web always gets browser device tools even when live web is off.
+        existing = {str(tool.get("function", {}).get("name", "")) for tool in tools}
+        for tool in _browser_tool_schemas():
+            name = str(tool.get("function", {}).get("name", ""))
+            if name and name not in existing:
+                tools.append(tool)
 
     if not tools:
         async for text in stream_completion(prompt, max_tokens=550 if spoken else 800, temperature=0.4 if spoken else 0.5):
             yield "delta", text
         return
 
-    force_tools = bool(ACCESS_FORCE_TERMS.search(user_text) and (computer_on or bluetooth_on))
+    force_tools = bool(
+        ACCESS_FORCE_TERMS.search(user_text)
+        and (computer_on or bluetooth_on or not include_computer)
+    )
     async for event in _stream_with_tool_round(
         prompt,
         tools,
-        execute_calls=lambda calls, safe: _combined_desktop_exec(calls, safe, spoken=spoken),
+        execute_calls=lambda calls, safe: _combined_desktop_exec(
+            calls, safe, spoken=spoken, browser_context=browser_context,
+        ),
         max_tokens=550 if spoken else 900,
         temperature=0.4 if spoken else 0.45,
         tool_choice="required" if force_tools else "auto",
@@ -675,7 +983,8 @@ async def orchestrated_stream(
     mode: str,
     *,
     spoken: bool = False,
-) -> AsyncIterator[tuple[str, str]]:
+    browser_context: dict[str, Any] | None = None,
+) -> AsyncIterator[tuple[str, Any]]:
     from app.services.desktop_settings import sync_desktop_settings_from_disk
 
     # Always re-apply Desktop permission JSON so toggles take effect without restart.
@@ -685,70 +994,15 @@ async def orchestrated_stream(
 
     # Desktop: tools every turn when permissions are on (voice/normal/auto all work).
     if settings.is_desktop:
-        async for event in _desktop_tool_stream(messages, spoken=spoken, live_ok=live_ok):
-            yield event
-        return
-
-    # Research mode (hosted web / non-desktop).
-    if mode == "research":
-        research_messages = _research_guidance(messages, live_ok, spoken=spoken)
-        user_text = _last_user_text(messages)
-        if WEATHER_HINT.search(user_text):
-            research_messages.append({
-                "role": "system",
-                "content": (
-                    "This looks like a weather question — call weather_lookup. "
-                    "If no city is named, use location 'here' for auto IP-based local weather."
-                ),
-            })
-        if TIME_HINT.search(user_text):
-            research_messages.append({
-                "role": "system",
-                "content": "This looks like a date/time or world-clock question — call time_now or time_world_clock. Never guess the time.",
-            })
-        if LOCATION_HINT.search(user_text):
-            research_messages.append({
-                "role": "system",
-                "content": "This looks like a location question — call location_ip for approximate city from public IP.",
-            })
-
-        schemas = _live_tool_schemas()
-        if not live_ok:
-            if not (TIME_HINT.search(user_text) or LOCATION_HINT.search(user_text) or WEATHER_HINT.search(user_text)):
-                async for text in stream_completion(
-                    research_messages,
-                    max_tokens=550 if spoken else None,
-                    temperature=0.4 if spoken else 0.5,
-                ):
-                    yield "delta", text
-                return
-            schemas = [
-                tool for tool in schemas
-                if str(tool.get("function", {}).get("name", "")) in {"time_now", "time_world_clock", "weather_lookup", "location_ip"}
-            ]
-
-        async def _live_exec(calls: list[Any], safe_messages: list[dict[str, Any]]):
-            async for event in _run_live_tools(calls, safe_messages, spoken=spoken):
-                yield event
-
-        async for event in _stream_with_tool_round(
-            research_messages,
-            schemas,
-            execute_calls=_live_exec,
-            max_tokens=550 if spoken else 900,
-            temperature=0.4 if spoken else 0.45,
+        async for event in _desktop_tool_stream(
+            messages, spoken=spoken, live_ok=live_ok, browser_context=browser_context, include_computer=True,
         ):
             yield event
         return
 
-    if mode == "automation":
-        async for event in _desktop_tool_stream(messages, spoken=spoken, live_ok=live_ok):
-            yield event
-        return
-
-    if mode == "voice":
-        async for text in stream_completion(messages, max_tokens=550, temperature=0.4):
-            yield "delta", text
-        return
-    async for text in stream_completion(messages, max_tokens=800, temperature=0.5):
-        yield "delta", text
+    # Hosted web: always give live + browser device tools so it stops falsely refusing access.
+    async for event in _desktop_tool_stream(
+        messages, spoken=spoken, live_ok=live_ok, browser_context=browser_context, include_computer=False,
+    ):
+        yield event
+    _ = mode  # retained for API compatibility with callers

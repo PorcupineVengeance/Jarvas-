@@ -118,12 +118,30 @@ async def _forecast_at(
     }
 
 
-async def lookup_weather(location: str = "here", units: str = "metric") -> dict[str, Any]:
+async def lookup_weather(
+    location: str = "here",
+    units: str = "metric",
+    *,
+    latitude: float | None = None,
+    longitude: float | None = None,
+) -> dict[str, Any]:
     place = (location or "").strip()
     if len(place) > 120:
-        raise WeatherError("Provide a city or place name (1–120 characters), or 'here' for IP-based local weather.")
+        raise WeatherError("Provide a city or place name (1–120 characters), or 'here' for local weather.")
 
-    # Auto / here → public IP geolocation
+    # Prefer precise browser GPS when the client supplied coordinates.
+    if place.lower() in AUTO_LOCATION_TOKENS and isinstance(latitude, (int, float)) and isinstance(longitude, (int, float)):
+        result = await _forecast_at(
+            lat=float(latitude),
+            lon=float(longitude),
+            label="Your location",
+            units=units,
+            location_source="browser_geolocation",
+        )
+        result["browser_geolocation"] = {"latitude": float(latitude), "longitude": float(longitude)}
+        return result
+
+    # Auto / here → public IP geolocation fallback
     if place.lower() in AUTO_LOCATION_TOKENS:
         from app.services.geolocation import GeolocationError, resolve_ip_location
 

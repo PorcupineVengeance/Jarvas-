@@ -2,8 +2,30 @@ import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Apple, AudioLines, Check, Download, FolderOpen, Globe2, LockKeyhole, Monitor, ShieldCheck, SlidersHorizontal } from 'lucide-react';
 import { api, type DesktopInfo, type Integration, type User } from '../lib/api';
+import {
+  detectBrowserCapabilities,
+  getBrowserPermissions,
+  requestBrowserPermission,
+  setBrowserPermission,
+  type BrowserPermissionKey,
+  type BrowserPermissions,
+} from '../lib/browserAccess';
 import { isJarvisDesktop, pickDesktopFolders, revealDesktopDataDir } from '../lib/desktop';
 import { DEFAULT_FISH_VOICE, getPreferredVoice, isWakeWordEnabled, setPreferredVoice, setWakeWordEnabled } from '../lib/voiceConversation';
+
+const BROWSER_PERM_ROWS: Array<{ key: BrowserPermissionKey; title: string; help: string }> = [
+  { key: 'geolocation', title: 'Location (GPS)', help: 'Precise weather and “where am I” using your browser location.' },
+  { key: 'notifications', title: 'Notifications', help: 'Allow JARVIS to show browser notifications when you ask.' },
+  { key: 'clipboard', title: 'Clipboard', help: 'Copy or read clipboard text when you request it.' },
+  { key: 'battery', title: 'Battery status', help: 'Report charge level when this browser supports it.' },
+  { key: 'share', title: 'Share sheet', help: 'Open the device share menu with links or text.' },
+  { key: 'wake_lock', title: 'Keep screen awake', help: 'Prevent sleep while voice/chat needs the screen.' },
+  { key: 'files', title: 'Local file picker', help: 'Let JARVIS ask you to upload files from this device.' },
+  { key: 'camera', title: 'Camera capture', help: 'Take a photo with your camera and upload it to JARVIS.' },
+  { key: 'screen_capture', title: 'Screen capture', help: 'Capture your screen/tab when you approve the browser prompt.' },
+  { key: 'vibrate', title: 'Vibration', help: 'Haptic buzz on phones for alerts (when supported).' },
+  { key: 'downloads', title: 'File downloads', help: 'Save notes or text files JARVIS generates onto this device.' },
+];
 
 const modes = [
   ['auto', 'Auto', 'Choose a helpful mode based on the request'],
@@ -85,9 +107,14 @@ export default function SettingsPage({ user }: { user: User }) {
   const [desktopError, setDesktopError] = useState('');
   const [wakeWord, setWakeWord] = useState(() => isWakeWordEnabled());
   const [desktopHydrated, setDesktopHydrated] = useState(false);
+  const [browserPerms, setBrowserPerms] = useState<BrowserPermissions>(() => getBrowserPermissions());
+  const [browserCaps] = useState(() => detectBrowserCapabilities());
+  const [browserBusyKey, setBrowserBusyKey] = useState<BrowserPermissionKey | null>(null);
+  const [browserMessage, setBrowserMessage] = useState('');
   const dirtyRef = useRef(false);
   const saveTimerRef = useRef<number | null>(null);
   const navigate = useNavigate();
+  const showBrowserPermissions = !isJarvisDesktop();
 
   const markDesktopDirty = () => {
     dirtyRef.current = true;
@@ -416,6 +443,53 @@ export default function SettingsPage({ user }: { user: User }) {
         <p className="setting-help">
           {research?.detail || 'Checking…'} {weather?.detail ? `Weather: ${weather.detail}` : ''}
         </p>
+      </section>
+    )}
+
+    {showBrowserPermissions && (
+      <section className="panel settings-section">
+        <div className="section-title">
+          <Monitor size={18} />
+          <div>
+            <h3>Browser device access</h3>
+            <p>Maximize what web JARVIS can do on this phone or laptop browser. OS app control still needs Desktop.</p>
+          </div>
+          <span className="readiness-chip ready"><i />Web</span>
+        </div>
+        {BROWSER_PERM_ROWS.map((row) => {
+          const supported = Boolean((browserCaps as Record<string, boolean>)[row.key] ?? true);
+          const on = browserPerms[row.key];
+          return (
+            <div className="setting-row" key={row.key}>
+              <div>
+                <strong>{row.title}</strong>
+                <span>{supported ? row.help : 'Not supported in this browser.'}</span>
+              </div>
+              <button
+                type="button"
+                className="toggle-button"
+                aria-pressed={on}
+                disabled={!supported || browserBusyKey === row.key}
+                onClick={() => {
+                  const next = !on;
+                  setBrowserPerms(setBrowserPermission(row.key, next));
+                  setBrowserMessage('');
+                  if (next) {
+                    setBrowserBusyKey(row.key);
+                    void requestBrowserPermission(row.key).then((result) => {
+                      setBrowserMessage(result.detail);
+                      setBrowserBusyKey(null);
+                    });
+                  }
+                }}
+              >
+                {on ? 'On' : 'Off'}
+              </button>
+            </div>
+          );
+        })}
+        {browserMessage && <p className="setting-help success-text">{browserMessage}</p>}
+        <div className="safety-note"><ShieldCheck size={15} /><span>Browser permissions stay on this device. JARVIS asks the browser for each capability and never pretends to control your full OS from the website.</span></div>
       </section>
     )}
 

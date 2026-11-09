@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AudioLines, CircleStop, LoaderCircle, MessageSquareText, Mic, MicOff, Play, ShieldCheck, Volume2, VolumeX, X } from 'lucide-react';
 import { api, type Integration } from '../lib/api';
+import { acquireWakeLock, gatherBrowserContext, releaseWakeLock as releaseBrowserWakeLock, runClientAction, type ClientAction } from '../lib/browserAccess';
+import { isJarvisDesktop } from '../lib/desktop';
 import {
   browserSpeechSupported,
   ensureMicrophonePermissionCached,
@@ -115,32 +117,30 @@ export default function VoicePage() {
     let answer = '';
     let failed = false;
     try {
+      if (!isJarvisDesktop()) void acquireWakeLock();
+      const browser_context = isJarvisDesktop() ? undefined : await gatherBrowserContext({ message: text });
+      const onStream = (event: string, data: Record<string, unknown>) => {
+        if (event === 'delta' && typeof data.text === 'string') {
+          answer += data.text;
+        } else if (event === 'client_action' && typeof data.name === 'string') {
+          void runClientAction(data as ClientAction).catch(() => undefined);
+        } else if (event === 'done' && typeof data.conversation_id === 'string') conversationIdRef.current = data.conversation_id;
+        else if (event === 'error') {
+          failed = true;
+          setError(typeof data.message === 'string' ? data.message : 'Conversation failed.');
+        }
+      };
       await api.streamChat(
-        { message: text, conversation_id: conversationIdRef.current, client_message_id: crypto.randomUUID(), mode: 'voice' },
-        (event, data) => {
-          if (event === 'delta' && typeof data.text === 'string') {
-            answer += data.text;
-          } else if (event === 'done' && typeof data.conversation_id === 'string') conversationIdRef.current = data.conversation_id;
-          else if (event === 'error') {
-            failed = true;
-            setError(typeof data.message === 'string' ? data.message : 'Conversation failed.');
-          }
-        },
+        { message: text, conversation_id: conversationIdRef.current, client_message_id: crypto.randomUUID(), mode: 'voice', browser_context },
+        onStream,
         controller.signal,
       );
       if (!failed) {
         if (!answer.trim()) {
           answer = '';
           await api.streamChat(
-            { message: text, client_message_id: crypto.randomUUID(), mode: 'voice' },
-            (event, data) => {
-              if (event === 'delta' && typeof data.text === 'string') answer += data.text;
-              else if (event === 'done' && typeof data.conversation_id === 'string') conversationIdRef.current = data.conversation_id;
-              else if (event === 'error') {
-                failed = true;
-                setError(typeof data.message === 'string' ? data.message : 'Conversation failed.');
-              }
-            },
+            { message: text, client_message_id: crypto.randomUUID(), mode: 'voice', browser_context },
+            onStream,
             controller.signal,
           );
         }
@@ -160,6 +160,8 @@ export default function VoicePage() {
       setLevel(0);
       if (!failed && voiceLoopRef.current) {
         window.setTimeout(() => { if (voiceLoopRef.current) void beginRef.current(); }, 160);
+      } else if (!isJarvisDesktop()) {
+        void releaseBrowserWakeLock();
       }
     }
   };

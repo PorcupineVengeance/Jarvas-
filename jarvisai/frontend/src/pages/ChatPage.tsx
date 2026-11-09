@@ -4,6 +4,8 @@ import { LoaderCircle, MessageSquarePlus, RotateCcw, ShieldCheck, ArrowUp, Circl
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { api, type ChatMessage } from '../lib/api';
+import { gatherBrowserContext, runClientAction, type ClientAction } from '../lib/browserAccess';
+import { isJarvisDesktop } from '../lib/desktop';
 
 type Conversation = { id: string; title: string; created_at: string; updated_at: string };
 type PendingRetry = { message: string; id: string } | null;
@@ -53,12 +55,15 @@ export default function ChatPage() {
     const controller = new AbortController(); streamController.current = controller;
     let failed = false;
     try {
-      await api.streamChat({ message: text, conversation_id: conversationId, client_message_id: clientId, mode }, (event, data) => {
+      const browser_context = isJarvisDesktop() ? undefined : await gatherBrowserContext({ message: text });
+      await api.streamChat({ message: text, conversation_id: conversationId, client_message_id: clientId, mode, browser_context }, (event, data) => {
         if (event === 'delta' && typeof data.text === 'string') {
           setProgress('');
           setMessages((current) => current.map((item) => item.id === assistantId ? { ...item, content: item.content + data.text } : item));
         } else if (event === 'status' && typeof data.status === 'string') {
           setProgress(data.status);
+        } else if (event === 'client_action' && typeof data.name === 'string') {
+          void runClientAction(data as ClientAction).catch(() => undefined);
         } else if (event === 'done') {
           if (typeof data.conversation_id === 'string') setConversationId(data.conversation_id);
         } else if (event === 'error') {

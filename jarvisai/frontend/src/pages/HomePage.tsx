@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { Activity, AudioLines, Check, ChevronRight, CircleStop, Download, FileText, MessageSquareText, Mic, Monitor, Plus, Send, Settings2, ShieldAlert, Sparkles, Volume2, X } from 'lucide-react';
 import { api, type AppStatus, type Task, type User } from '../lib/api';
 import { isJarvisDesktop } from '../lib/desktop';
+import { acquireWakeLock, gatherBrowserContext, releaseWakeLock as releaseBrowserWakeLock, runClientAction, type ClientAction } from '../lib/browserAccess';
 import { browserSpeechSupported, ensureMicrophonePermissionCached, forSpeech, getPreferredVoice, matchSleepPhrase, playAudioBlob, setJarvisSessionOnline, setVoiceBusy, shouldUseServerStt, speakWithBrowser, startBrowserListen, startVoiceCapture, type LiveListenHandle, type RecordingHandle } from '../lib/voiceConversation';
 
 function Meter({ label, value, display }: { label: string; value?: number; display: string }) {
@@ -208,19 +209,24 @@ export default function HomePage({ user }: { user: User }) {
     let failed = false;
     let fullAnswer = '';
     try {
+      if (!isJarvisDesktop()) void acquireWakeLock();
+      const browser_context = isJarvisDesktop() ? undefined : await gatherBrowserContext({ message: text });
+      const onStream = (event: string, data: Record<string, unknown>) => {
+        if (event === 'delta' && typeof data.text === 'string') {
+          fullAnswer += data.text;
+        } else if (event === 'client_action' && typeof data.name === 'string') {
+          void runClientAction(data as ClientAction).catch(() => undefined);
+        } else if (event === 'done' && typeof data.conversation_id === 'string') {
+          setConversationId(data.conversation_id);
+          conversationIdRef.current = data.conversation_id;
+        } else if (event === 'error') {
+          failed = true;
+          setChatError(typeof data.message === 'string' ? data.message : 'The response was interrupted.');
+        }
+      };
       await api.streamChat(
-        { message: text, conversation_id: conversationIdRef.current, client_message_id: clientId, mode: 'voice' },
-        (event, data) => {
-          if (event === 'delta' && typeof data.text === 'string') {
-            fullAnswer += data.text;
-          } else if (event === 'done' && typeof data.conversation_id === 'string') {
-            setConversationId(data.conversation_id);
-            conversationIdRef.current = data.conversation_id;
-          } else if (event === 'error') {
-            failed = true;
-            setChatError(typeof data.message === 'string' ? data.message : 'The response was interrupted.');
-          }
-        },
+        { message: text, conversation_id: conversationIdRef.current, client_message_id: clientId, mode: 'voice', browser_context },
+        onStream,
         controller.signal,
       );
       if (!failed) {
@@ -229,17 +235,8 @@ export default function HomePage({ user }: { user: User }) {
         if (!finalText) {
           fullAnswer = '';
           await api.streamChat(
-            { message: text, client_message_id: crypto.randomUUID(), mode: 'voice' },
-            (event, data) => {
-              if (event === 'delta' && typeof data.text === 'string') fullAnswer += data.text;
-              else if (event === 'done' && typeof data.conversation_id === 'string') {
-                setConversationId(data.conversation_id);
-                conversationIdRef.current = data.conversation_id;
-              } else if (event === 'error') {
-                failed = true;
-                setChatError(typeof data.message === 'string' ? data.message : 'The response was interrupted.');
-              }
-            },
+            { message: text, client_message_id: crypto.randomUUID(), mode: 'voice', browser_context },
+            onStream,
             controller.signal,
           );
           finalText = fullAnswer.trim();
@@ -265,6 +262,7 @@ export default function HomePage({ user }: { user: User }) {
         window.setTimeout(() => { if (voiceLoopRef.current) void beginListeningRef.current(); }, 280);
       } else {
         setVoiceBusy(false);
+        if (!isJarvisDesktop()) void releaseBrowserWakeLock();
         if (!voiceLoopRef.current) window.setTimeout(() => inputRef.current?.focus(), 40);
       }
     }

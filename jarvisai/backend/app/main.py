@@ -138,7 +138,10 @@ async def security_and_rate_limit(request: Request, call_next):
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    response.headers["Permissions-Policy"] = "microphone=(self), camera=(), geolocation=(), payment=()"
+    response.headers["Permissions-Policy"] = (
+        "microphone=(self), camera=(self), geolocation=(self), display-capture=(self), "
+        "accelerometer=(), gyroscope=(), magnetometer=(), payment=(), usb=()"
+    )
     response.headers["Cache-Control"] = "no-store"
     return response
 
